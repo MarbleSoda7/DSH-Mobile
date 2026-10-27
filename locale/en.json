@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Phone Takeover",
+    "description": "Scan a QR code to open DeepSeek Harness from your phone: list sessions, chat, stop a turn, switch model and reasoning effort, and answer Host questions over an incremental offline-cached PWA."
+  }
+}

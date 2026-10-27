@@ -1,0 +1,26 @@
+# 运行态与本地状态（含设备密钥、用量、隧道配置）
+.smoke-state/
+.tmp/
+tools/.probe-state/
+*.log
+
+# 本机专用凭据/配置，绝不入库
+tunnel.json
+devices.json
+usage.json
+
+# 事故现场与一次性草稿
+*.broken-*
+*.CORRUPTED-*
+*.before-turn-summary
+app.next.js
+lib/index.probe.mjs
+lib/index.js.bak
+
+# 配对二维码（含一次性配对码，10 分钟有效，但没必要入库）
+pair-qr.png
+
+# 系统垃圾
+Thumbs.db
+desktop.ini
+node_modules/

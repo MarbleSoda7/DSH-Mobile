@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>手机接管 DSH</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#0b0d12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DSH">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- 配对 -->
+  <section id="view-pair" class="view hidden">
+    <div class="pair-card">
+      <img class="pair-logo" src="/icon.svg" alt="">
+      <h1>连接你的 DSH</h1>
+      <p class="muted">用电脑打开 <code>/admin</code> 页面扫码，或粘贴下方配对码。</p>
+      <input id="pair-code" class="pair-input" placeholder="配对码" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <input id="pair-name" class="pair-input" placeholder="给这台手机起个名字" autocomplete="off">
+      <button id="pair-submit" class="primary-btn">绑定</button>
+      <p id="pair-error" class="error hidden"></p>
+    </div>
+  </section>
+
+  <!-- 会话列表 -->
+  <section id="view-list" class="view hidden">
+    <header class="topbar">
+      <div class="topbar-main">
+        <div class="topbar-title">会话</div>
+        <div id="conn-state" class="conn"><i></i><span>连接中</span></div>
+      </div>
+      <button id="btn-refresh" class="icon-btn" title="刷新">⟳</button>
+    </header>
+    <div id="session-list" class="session-list"></div>
+    <div id="list-empty" class="empty hidden">还没有会话，先在电脑上的 DSH 里开一个。</div>
+  </section>
+
+  <!-- 聊天 -->
+  <section id="view-chat" class="view hidden">
+    <header class="topbar">
+      <button id="btn-back" class="icon-btn" title="返回">‹</button>
+      <div class="topbar-main">
+        <div id="chat-title" class="topbar-title">会话</div>
+        <div id="chat-sub" class="topbar-sub"></div>
+      </div>
+      <button id="btn-stop" class="stop-btn hidden" title="终止本轮">停止</button>
+    </header>
+    <div id="transcript" class="transcript"></div>
+    <button id="btn-bottom" class="to-bottom hidden">↓</button>
+    <div id="queue" class="queue hidden"></div>
+    <div class="composer">
+      <textarea id="composer" rows="1" placeholder="发消息…（运行中自动排队）"></textarea>
+      <button id="btn-model" class="model-chip" title="切换模型与思考强度">模型</button>
+      <button id="btn-send" class="send-btn" title="发送">↑</button>
+    </div>
+  </section>
+
+</div>
+
+<!-- 模型选择 -->
+<div id="sheet-model" class="sheet hidden">
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-body">
+    <div class="sheet-head">
+      <span>模型与思考强度</span>
+      <button class="icon-btn" data-close>×</button>
+    </div>
+    <div id="model-content" class="sheet-content"></div>
+  </div>
+</div>
+
+<!-- 问答 -->
+<div id="sheet-question" class="sheet hidden">
+  <div class="sheet-mask"></div>
+  <div class="sheet-body">
+    <div class="sheet-head">
+      <span id="q-title">DSH 需要你补充信息</span>
+      <button class="icon-btn" id="q-dismiss">×</button>
+    </div>
+    <div id="q-content" class="sheet-content"></div>
+    <div class="sheet-foot">
+      <button id="q-submit" class="primary-btn">提交答案</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

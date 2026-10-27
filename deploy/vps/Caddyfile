@@ -1,0 +1,22 @@
+# /etc/caddy/Caddyfile
+# 只反代 DSH 手机接管那一个端口；/admin 只有电脑本机能用，这里再挡一层。
+
+{
+	admin off
+	email you@example.com
+}
+
+# 把 dsh.example.com 换成你的域名（A 记录指向 8.152.5.127）
+dsh.example.com {
+	encode zstd gzip
+
+	# 配对页/设备管理只能在电脑本机操作，公网一律拒绝
+	@admin path /admin /admin/*
+	respond @admin "只允许在电脑上打开 http://127.0.0.1:7788/admin" 403
+
+	reverse_proxy 127.0.0.1:7788 {
+		# SSE 不能被缓冲，否则手机要等到整条消息生成完才显示
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

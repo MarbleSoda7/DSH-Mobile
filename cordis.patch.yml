@@ -1,0 +1,12 @@
+# 把「手机远程接管 DSH」的宿主插件插入 profile。
+# 只监听回环地址；手机会经 Cloudflare 临时隧道（或云服务器 frp）访问。
+# - publicOrigin：frp 修好后的固定公网地址（安全组放行 7788 后才有效）
+# - tunnelUrlFile：当前 Cloudflare 隧道地址，每次隧道重启由 tools/tunnel.ps1 更新
+- insert:
+    - id: mobile-remote
+      name: '@local/dsh-mobile-remote'
+      config:
+        host: '127.0.0.1'
+        port: 7788
+        publicOrigin: 'http://8.152.5.127:7788'
+        tunnelUrlFile: 'C:/Users/29113/AppData/Local/cloudflared/url.txt'

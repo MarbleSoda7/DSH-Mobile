@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>手机接管 · 配对</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { padding: 24px; }
+  .admin { max-width: 720px; margin: 0 auto; }
+  .qr-wrap { background:#fff; padding:16px; border-radius:16px; display:inline-block; }
+  .qr-wrap img { width: 260px; height: 260px; display:block; }
+  .qr-fallback { width:260px; height:260px; display:flex; align-items:center; justify-content:center; text-align:center; color:#111; font-size:14px; line-height:1.8; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid #23262f; }
+  code, .url { word-break: break-all; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="admin">
+  <h1 style="margin:0 0 6px">手机接管 DSH</h1>
+  <p class="muted">这个页面只能从电脑本机打开。二维码 10 分钟内有效，一次使用后作废。</p>
+
+  <div class="row" style="margin-top:18px">
+    <div class="qr-wrap"><img id="qr" alt="配对二维码"><div id="qr-fallback" class="qr-fallback" style="display:none">二维码不可用<br>请手动打开右侧网址<br>并输入配对码</div></div>
+    <div style="flex:1; min-width:260px">
+      <p>手机扫码后自动进入绑定；也可以手动打开：</p>
+      <p class="url" id="url">…</p>
+      <p>配对码：<code id="code">…</code></p>
+      <p>剩余有效：<b id="ttl">…</b></p>
+      <p>
+        <label class="muted" for="origin">对外地址（隧道/公网前缀）</label><br>
+        <input id="origin" class="pair-input" placeholder="https://你的域名" style="width:100%;margin-top:6px">
+      </p>
+      <button class="primary-btn" id="btn-new">重新生成二维码</button>
+    </div>
+  </div>
+
+  <h2 style="font-size:16px;margin:28px 0 8px">已绑定设备</h2>
+  <table>
+    <thead><tr><th>名称</th><th>绑定时间</th><th>最近使用</th><th></th></tr></thead>
+    <tbody id="devices"></tbody>
+  </table>
+  <p class="muted" id="usage"></p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+let timer = 0
+let rotating = false
+
+// 不要在 HTML 里写 src=""：空 src 会立刻触发一次 error 事件，兜底提示就会常驻。
+$('qr').onload = () => { $('qr').style.display = 'block'; $('qr-fallback').style.display = 'none' }
+$('qr').onerror = () => { $('qr').style.display = 'none'; $('qr-fallback').style.display = 'flex' }
+
+function fmt(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+async function loadDevices() {
+  const res = await fetch('/api/devices')
+  const data = await res.json()
+  const body = $('devices')
+  body.innerHTML = ''
+  const active = (data.devices || []).filter((d) => !d.revoked)
+  if (active.length === 0) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = '<td colspan="4" class="muted">还没有手机绑定。用手机扫上面的二维码即可。</td>'
+    body.appendChild(tr)
+  }
+  for (const device of active) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `<td>${device.name}</td>
+      <td>${fmt(device.createdAt)}</td><td>${fmt(device.lastSeenAt)}</td>
+      <td><button class="ghost-btn" data-id="${device.id}">撤销</button></td>`
+    body.appendChild(tr)
+  }
+  for (const btn of body.querySelectorAll('button[data-id]')) {
+    btn.onclick = async () => {
+      await fetch('/api/devices/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: btn.dataset.id }) })
+      loadDevices()
+    }
+  }
+  const u = data.usage || {}
+  $('usage').textContent = `已绑定 ${active.length} 台设备 · 本次运行已发送约 ${((u.bytesOut || 0) / 1024 / 1024).toFixed(2)} MB · ${u.requests || 0} 个请求`
+}
+
+async function newCode() {
+  const origin = $('origin').value.trim()
+  const res = await fetch('/api/paircode' + (origin ? '?origin=' + encodeURIComponent(origin) : ''))
+  const data = await res.json()
+  if (!data.ok) { $('url').textContent = data.error || '生成失败'; return }
+  $('code').textContent = data.code
+  $('url').textContent = data.url
+  $('qr').src = '/api/qr?format=png&text=' + encodeURIComponent(data.url) + '&v=' + Date.now()
+  localStorage.setItem('mr.admin.origin', origin)
+  clearInterval(timer)
+  timer = setInterval(() => {
+    const left = Math.max(0, Math.round((data.expiresAt - Date.now()) / 1000))
+    $('ttl').textContent = left > 0 ? `${left} 秒` : '已过期，正在换新码…'
+    if (left === 0) clearInterval(timer)
+    // 快过期时自动换一张新码：手机扫到时永远不会拿到失效的码
+    else if (left <= 45 && !rotating) {
+      rotating = true
+      newCode().finally(() => { rotating = false })
+    }
+  }, 1000)
+}
+
+// 对外地址留空时由服务端按 publicOrigin（固定公网 IP）→ 隧道地址 → 局域网 依次决定，
+// 所以这里不再预填任何值，避免用户看到"像是被隧道域名占住了"。
+$('origin').value = localStorage.getItem('mr.admin.origin') || ''
+$('origin').placeholder = '留空＝自动（固定公网 IP 优先）'
+$('btn-new').onclick = newCode
+newCode()
+loadDevices()
+setInterval(loadDevices, 5000)
+</script>
+</body>
+</html>

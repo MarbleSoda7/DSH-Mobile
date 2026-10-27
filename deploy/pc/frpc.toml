@@ -1,0 +1,30 @@
+# frpc.toml -- frp client on this Windows PC (template used by setup-frpc.ps1)
+# Purpose: lend this PC's 127.0.0.1:7788 to the cloud server's 127.0.0.1:7788,
+# so the phone can reach it through http://8.152.5.127:7788.
+# NOTE: keep this file ASCII-only -- Windows PowerShell 5.1 reads BOM-less files as
+# ANSI and would mangle any non-ASCII text written back by the setup script.
+
+serverAddr = "8.152.5.127"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "REPLACE_WITH_LONG_RANDOM_TOKEN"
+
+# Keep retrying instead of exiting when the server is unreachable
+# (security group not opened yet, server rebooting, network hiccup, ...).
+loginFailExit = false
+
+# Encrypt the control connection between this PC and the server.
+transport.tls.enable = true
+
+# Relative to the frpc working directory (the script starts it in %LOCALAPPDATA%\frp).
+log.to = "frpc.log"
+log.level = "info"
+log.maxDays = 3
+
+[[proxies]]
+name = "dsh-mobile"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 7788
+remotePort = 7788

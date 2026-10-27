@@ -1,0 +1,685 @@
+:root {
+  --bg: #0b0d12;
+  --bg-soft: #12151d;
+  --bg-raise: #181c26;
+  --line: #232936;
+  --text: #e7ebf3;
+  --muted: #8b93a7;
+  --accent: #4c8dff;
+  --accent-soft: #21365c;
+  --danger: #ff6b6b;
+  --ok: #3ddc97;
+  --radius: 14px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 手机上「手指下拉」= 浏览器刷新，在会话里频繁上滑翻页时会被误触发。
+     这三条一起用：禁止滚动链/下拉刷新，并锁死页面本身不滚动（只让时间线内部滚动）。 */
+  overscroll-behavior: none;
+  overscroll-behavior-y: contain;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+
+body { padding: 0; }
+#app { height: 100%; overflow: hidden; }
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.error { color: var(--danger); font-size: 13px; }
+
+.view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* min-height:0 是必须的：flex 子项默认 min-height:auto，内容一长就会把 .view 撑破，
+     滚动条落到 body 上、而 #transcript 永远 scrollTop=0 ——
+     表现就是"上滑不加载更早记录、还会触发浏览器下拉刷新"。 */
+  min-height: 0;
+  padding-top: var(--safe-t);
+}
+
+/* ---------------------------------------------------------------- pair */
+
+#view-pair { align-items: center; justify-content: center; padding: 24px; }
+.pair-card { width: 100%; max-width: 360px; text-align: center; }
+.pair-logo { width: 64px; height: 64px; border-radius: 16px; margin-bottom: 12px; }
+.pair-card h1 { font-size: 20px; margin: 0 0 8px; }
+.pair-card p { margin: 0 0 16px; }
+.pair-card code { background: var(--bg-raise); padding: 1px 5px; border-radius: 5px; }
+.pair-input {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 13px 14px;
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  font-size: 15px;
+  outline: none;
+}
+.pair-input:focus { border-color: var(--accent); }
+
+.primary-btn, .send-btn, .ghost-btn, .pill-btn, .icon-btn, .stop-btn {
+  font: inherit;
+  cursor: pointer;
+  border: 0;
+  border-radius: 11px;
+}
+.primary-btn {
+  width: 100%;
+  padding: 13px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.primary-btn:active { filter: brightness(0.9); }
+
+/* --------------------------------------------------------------- topbar */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(11, 13, 18, 0.92);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding-top: calc(10px + var(--safe-t));
+}
+.topbar-main { flex: 1; min-width: 0; }
+.topbar-title {
+  font-weight: 600;
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-sub {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  background: var(--bg-raise);
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1;
+  flex: none;
+}
+.pill-btn {
+  padding: 7px 12px;
+  background: var(--bg-raise);
+  color: var(--text);
+  font-size: 13px;
+  flex: none;
+}
+.stop-btn {
+  padding: 7px 12px;
+  background: rgba(255, 107, 107, 0.16);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 600;
+  flex: none;
+}
+.ghost-btn {
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.conn { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.conn i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.conn.on i { background: var(--ok); }
+.conn.off i { background: var(--danger); }
+
+/* ----------------------------------------------------------- session list */
+
+.session-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px calc(20px + var(--safe-b)); overscroll-behavior-y: contain; }
+.session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.session-item:active { background: var(--bg-raise); }
+.session-head { display: flex; align-items: center; gap: 8px; }
+.session-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-raise);
+  color: var(--muted);
+  font-size: 11px;
+}
+.tag.run { background: rgba(61, 220, 151, 0.14); color: var(--ok); }
+.empty { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 14px; }
+
+/* ------------------------------------------------------------ transcript */
+
+.transcript {
+  flex: 1;
+  /* flex 里的滚动容器必须 min-height:0，否则内容会把容器撑到自然高度，
+     overflow-y:auto 就永远不会生效（滚动跑到 body 上）。 */
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  padding: 12px 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 不要 scroll-behavior:smooth：程序化 scrollTop 与手指拖动同时发生时，iOS/Android
+     会等平滑动画结束才响应手指，真机表现为"刚进会话时滑不动"。跳变由 JS 直接赋值。 */
+  /* 上滑翻页时，滚到顶继续拉会把整页/浏览器下拉刷新一起带动：
+     这里禁止滚动链与下拉刷新，并把惯性滚动限制在本容器内。 */
+  overscroll-behavior: contain;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  /* 顶部小回弹也关掉：iOS 上下拉过界会连带触发整页刷新 */
+  scroll-snap-type: none;
+}
+
+.msg { max-width: 88%; border-radius: var(--radius); padding: 9px 12px; font-size: 15px; white-space: pre-wrap; word-break: break-word; }
+.msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 5px; }
+.msg.assistant { align-self: flex-start; background: var(--bg-soft); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.msg.assistant.streaming { border-color: var(--accent-soft); }
+/* 流式正文容器：白空格保留，避免多段 delta 之间丢换行 */
+.delta-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 长消息/长输出的"展开全文"：贴在气泡底部，轻量、不抢视觉。 */
+.msg-more {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 6px; padding: 4px 10px;
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: #9fb6dd; font-size: 12px; line-height: 1.2;
+}
+.msg.user .msg-more {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #fff;
+}
+.msg-more:disabled { opacity: .7; }
+.msg .role { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+.msg.user .role { color: rgba(255, 255, 255, 0.7); }
+.msg code { background: rgba(255, 255, 255, 0.08); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+.msg pre {
+  margin: 6px 0 2px;
+  padding: 9px;
+  background: #0a0c11;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre;
+}
+.msg pre code { background: none; padding: 0; }
+.msg details { margin: 4px 0; }
+.msg details summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+
+.chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 88%;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.chip.result { border-radius: 10px; display: block; }
+.chip.result summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip.result pre { margin: 6px 0 0; max-height: 40vh; overflow: auto; white-space: pre-wrap; }
+
+.divider { align-self: center; color: var(--muted); font-size: 11px; padding: 2px 8px; }
+.divider.err { color: var(--danger); }
+
+.to-bottom {
+  position: absolute;
+  right: 14px;
+  bottom: calc(78px + var(--safe-b));
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  color: var(--text);
+  font-size: 15px;
+  z-index: 4;
+}
+
+/* -------------------------------------------------------------- composer */
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 10px calc(8px + var(--safe-b));
+  background: rgba(11, 13, 18, 0.96);
+  border-top: 1px solid var(--line);
+}
+.composer textarea {
+  flex: 1;
+  min-height: 40px;
+  max-height: 132px;
+  padding: 10px 12px;
+  resize: none;
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+  line-height: 1.4;
+}
+.composer textarea:focus { border-color: var(--accent); }
+.send-btn {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+}
+.send-btn:disabled { opacity: 0.45; }
+
+/* ----------------------------------------------------------------- sheets */
+
+.sheet { position: fixed; inset: 0; z-index: 20; display: flex; align-items: flex-end; }
+.sheet-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
+.sheet-body {
+  position: relative;
+  width: 100%;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-soft);
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+  border-top: 1px solid var(--line);
+  padding-bottom: var(--safe-b);
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 8px;
+  font-weight: 600;
+}
+.sheet-content { overflow-y: auto; padding: 4px 14px 14px; }
+.sheet-foot { padding: 10px 14px calc(14px + var(--safe-b)); border-top: 1px solid var(--line); }
+
+.model-group { margin-bottom: 14px; }
+.model-group h3 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 8px 0 6px; }
+.model-item {
+  padding: 9px 11px;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  background: var(--bg-raise);
+  border: 1px solid transparent;
+  font-size: 14px;
+}
+.model-item.active { border-color: var(--accent); background: var(--accent-soft); }
+.model-item small { display: block; color: var(--muted); font-size: 11.5px; }
+.effort-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.effort {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+.effort.active { border-color: var(--accent); color: #fff; background: var(--accent-soft); }
+
+.q-item { margin-bottom: 18px; }
+.q-item h3 { font-size: 15px; margin: 0 0 4px; }
+.q-item p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 11px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.option small { display: block; color: var(--muted); font-size: 12px; }
+.option.active { border-color: var(--accent); background: var(--accent-soft); }
+.q-custom {
+  width: 100%;
+  padding: 10px 12px;
+  margin-top: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+  min-height: 44px;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(90px + var(--safe-b));
+  transform: translateX(-50%);
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: rgba(30, 34, 44, 0.96);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  z-index: 30;
+  max-width: 82vw;
+}
+
+/* ---- 排队消息条（发送时本轮还在跑）---- */
+.queue {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 12px; max-height: 32vh; overflow: hidden;
+  border-top: 1px solid #1c212b; background: #0e1117;
+  /* 底部安全区由下面的 .composer 负责，这里不能再加一遍，否则单条排队时
+     会多出一条空白，看起来"排队条很高"。 */
+  /* 上下滑动切换排队消息：不要把这个手势交给页面滚动 */
+  overscroll-behavior: contain;
+  touch-action: pan-x;
+}
+.queue.hidden { display: none; }
+.queue-item {
+  display: flex; align-items: center; gap: 8px;
+  background: #151a23; border: 1px solid #232a37; border-radius: 12px;
+  padding: 8px 10px;
+}
+.queue-text {
+  flex: 1; min-width: 0; max-height: 4.2em; overflow: hidden;
+  font-size: 14px; line-height: 1.45; color: #d6dbe5;
+  white-space: pre-wrap; word-break: break-word;
+}
+.queue-btn {
+  flex: 0 0 auto; width: 30px; height: 30px; padding: 0;
+  border-radius: 9px; border: 1px solid #2a3140; background: #1b2130;
+  color: #b3bccb; font-size: 14px; line-height: 1;
+}
+.queue-btn:active { background: #252d3c; }
+/* 多条排队时的分页提示（上下滑动切换） */
+.queue-pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 2px 4px 0;
+}
+.queue-pager-hint { font-size: 11px; color: var(--muted); }
+.queue-dots { display: flex; align-items: center; gap: 6px; }
+.queue-dot {
+  width: 7px; height: 7px; padding: 0; border-radius: 50%;
+  border: 0; background: #333c4d;
+}
+.queue-dot.on { background: #5b8cff; }
+.queue-item.editing .queue-edit {
+  flex: 1; min-width: 0; resize: none; padding: 6px 8px;
+  background: #0f131a; color: #e7eaf1; font-size: 14px; line-height: 1.45;
+  border: 1px solid #2f3747; border-radius: 8px;
+}
+/* ---- Markdown ---- */
+.msg-text p { margin: 0 0 8px; }
+.msg-text p:last-child { margin-bottom: 0; }
+/* 加粗只靠字重和亮度区分，不加任何衬底（衬底会让整段文字看起来一块一块的）。 */
+.msg-text strong, .msg-text b { font-weight: 800; color: #ffffff; }
+.msg-text em, .msg-text i { font-style: italic; color: #d7dcea; }
+.msg-text del { color: var(--muted); }
+/* 标题：正文是 15px，标题必须拉开明显落差才有层级感。
+   渲染器把 markdown 的 #/##/### 降级成 h3/h4/h5（手机里 h1 太大），
+   所以连最小的 h6 也要比正文大一截，h3 更要接近正文的 1.6 倍。 */
+.msg-text h1, .msg-text h2, .msg-text h3, .msg-text h4, .msg-text h5, .msg-text h6 {
+  margin: 20px 0 10px; font-weight: 700; line-height: 1.3; color: #ffffff;
+}
+.msg-text h1 { font-size: 25px; }
+.msg-text h2 { font-size: 23px; }
+.msg-text h1:first-child, .msg-text h2:first-child, .msg-text h3:first-child { margin-top: 0; }
+.msg-text h3 { font-size: 21px; padding-bottom: 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.14); }
+.msg-text h4 { font-size: 19px; }
+.msg-text h5 { font-size: 17.5px; color: #eef2f9; }
+.msg-text h6 { font-size: 16.5px; color: #dfe5f0; }
+.msg-text ul, .msg-text ol { margin: 6px 0 8px; padding-left: 20px; }
+.msg-text li { margin: 2px 0; }
+.msg-text li.lv1 { margin-left: 14px; }
+.msg-text li.lv2 { margin-left: 28px; }
+/* 引用块：衬底和左边线都要比正文明显，否则看起来只是一段普通文字。 */
+.msg-text blockquote {
+  margin: 10px 0; padding: 8px 12px;
+  border-left: 3px solid #4c74c9; color: #d3d9e6;
+  background: rgba(110, 168, 255, 0.10); border-radius: 6px;
+}
+.msg-text hr { border: 0; border-top: 1px solid #2a3140; margin: 14px 0; }
+.msg-text a { color: #7db1ff; text-decoration: none; word-break: break-all; }
+/* 行内代码的"衬底"：原来 #1b2029 和气泡底色几乎同色，看不出是个代码块。
+   现在用更亮的底 + 明确的描边 + 暖色字，远看就是一块"代码标签"。 */
+.msg-text code {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px; padding: 1px 6px;
+  color: #ffd9a8;
+  font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-word;
+}
+.msg-text pre.md-pre { margin: 10px 0; padding: 10px; background: #0e1117; border: 1px solid #2a3140; border-radius: 8px; overflow-x: auto; }
+.msg-text pre.md-pre code { background: none; border: 0; padding: 0; color: inherit; font-size: 12.5px; line-height: 1.5; white-space: pre; }
+.md-table { overflow-x: auto; margin: 10px 0; }
+.md-table table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+.md-table th, .md-table td { border: 1px solid #2a3140; padding: 6px 9px; text-align: left; white-space: nowrap; }
+.md-table th { background: rgba(255, 255, 255, 0.07); font-weight: 700; color: #fff; }
+.md-table tr:nth-child(even) td { background: rgba(255, 255, 255, 0.03); }
+/* ---- queue placeholder / long text guard ---- */
+.queue-item.pending { opacity: .75; }
+.queue-pending { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
+.divider, .divider.err { white-space: normal; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+.error, p.error { overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+.msg, .msg-text, .ev-row, .ev-detail, .sheet-body, #model-content, .list, .queue-item { min-width: 0; max-width: 100%; }
+.msg-text, .ev-detail, .queue-text { overflow-wrap: anywhere; }
+.ev-detail { white-space: pre-wrap; overflow-x: auto; }
+
+/* ---- 思考/调用：默认只留一行，点一下展开，再点收回；正文出现后全部收起 ---- */
+/* 过程行（思考/工具调用/运行结果）：电脑版同款——淡灰小字、单行、可点开。
+   注意：容器类名是 .ev-wrap，行元素类名是 .ev-row（曾经错写 .ev，导致整段样式失效）。 */
+.ev-wrap { display: flex; flex-direction: column; align-self: stretch; margin: 2px 0; }
+/* run_code 里的嵌套子调用（读取/搜索/查看子智能体）：与电脑端一致地缩进一层，
+   并在左侧留一条极淡的竖线，表示它们从属于上面那条"运行代码"。 */
+.ev-wrap.ev-sub { margin-left: 14px; padding-left: 9px; border-left: 1px solid rgba(255,255,255,0.09); }
+.ev-wrap.ev-sub > .ev-row { font-size: 12px; }
+.ev-wrap > .ev-detail { display: none; }
+.ev-wrap.open > .ev-detail { display: block; }
+.ev-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 2px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.ev-row:active { background: rgba(255, 255, 255, 0.05); }
+.ev-ico { flex: 0 0 auto; width: 14px; text-align: center; opacity: .85; }
+.ev-verb { flex: 0 0 auto; }
+.ev-dot { flex: 0 0 auto; opacity: .5; }
+.ev-target {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: inherit;
+  opacity: .8;
+}
+.ev-extra { flex: 0 0 auto; font-size: 11.5px; opacity: .6; }
+/* 一轮结束的"已完成，用时 x"：和过程行同级的淡色小字，不带图标底色 */
+.ev-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding: 2px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  opacity: .85;
+}
+.ev-summary .ev-ico { opacity: .5; font-size: 11px; }
+.ev-summary .ev-verb { font-weight: 400; }
+.ev-chev {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: .55;
+  transition: transform .15s ease;
+}
+.ev-wrap.open > .ev-row > .ev-chev { transform: rotate(180deg); }
+.ev-chev.hidden { display: none; }
+.ev-fail .ev-verb, .ev-fail .ev-ico { color: #ff8b8b; }
+.ev-fail .ev-target { color: #ffb3b3; }
+.ev-wrap.open > .ev-detail {
+  margin: 4px 0 8px;
+  padding: 9px 10px;
+  border-left: 2px solid var(--line);
+  background: #0d1016;
+  border-radius: 0 8px 8px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c3cad8;
+  max-height: 46vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+/* 一轮的过程行收起后，结尾留一条「已完成，用时 X」；点它可整轮展开/收起 */
+.turn-mark { display: none; }
+.turn-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.turn-summary::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--line); }
+.turn-summary > .turn-summary-text { flex: 0 0 auto; white-space: nowrap; }
+.turn-summary.open > .ev-chev { transform: rotate(180deg); }
+.turn-summary > .ev-chev { margin-left: 0; }
+
+/* 上滑到顶时的"正在加载更早记录"提示：不占位、不推内容，避免打断阅读 */
+.older-loading {
+  /* 绝对定位：提示行不能参与布局，否则它出现/消失会让 scrollHeight 变化，
+     用户正在拖动时视野会被"顶一下"（真机反馈"跟我抢上下滑控制"）。 */
+  position: absolute;
+  top: 4px; left: 0; right: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+/* 助手正文不套气泡，直接铺在背景上（对齐电脑版） */
+.msg.assistant.plain {
+  align-self: stretch;
+  max-width: 100%;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 2px 0 6px;
+}
+.msg.assistant.plain .msg-text { font-size: 15px; }
+
+/* 宿主注入的运行时上下文/时间采样：比工具行更淡，一眼看出不是"我"说的话 */
+.ev-sys > .ev-row { opacity: .62; font-size: 12px; }
+.ev-sys > .ev-row .ev-target { white-space: normal; }
+
+
+/* 图片消息：手机窄屏必须限宽，否则 width 属性会把 1919px 的原图撑出屏幕 */
+.msg-figure {
+  margin: 6px 0 2px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  cursor: zoom-in;
+}
+.msg-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.msg-figure .msg-image-fail {
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+}
+/* 输入框左侧的模型键：与输入框、发送键同高（40px），文字超长省略 */
+.composer .model-chip {
+  flex: none;
+  height: 40px;
+  min-width: 56px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-soft);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.composer .model-chip:active { background: rgba(77, 141, 255, 0.18); }
+.composer .model-chip.running { color: var(--accent); border-color: rgba(77, 141, 255, 0.55); }

@@ -1,0 +1,23 @@
+# /etc/frp/frps.toml —— 云服务器（8.152.5.127）上的 frp 服务端
+# 只做一件事：把电脑上的 127.0.0.1:7788 借到服务器的 127.0.0.1:7788。
+# 对外永远只让 Caddy 碰这个端口，frp 本身不直接暴露 HTTP。
+
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# 电脑与服务器之间的共享密钥；setup-frps.sh 会自动生成并写进这里
+auth.method = "token"
+auth.token = "REPLACE_WITH_LONG_RANDOM_TOKEN"
+
+# 只允许代理这一个远端端口，避免有人拿你的 frps 开别的东西
+allowPorts = [{ start = 7788, end = 7788 }]
+
+log.to = "/var/log/frp/frps.log"
+log.level = "info"
+log.maxDays = 7
+
+# 仪表盘只在服务器本机可看：ssh -L 7500:127.0.0.1:7500 后再浏览器打开
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "REPLACE_WITH_DASHBOARD_PASSWORD"

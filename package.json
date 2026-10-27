@@ -1,0 +1,29 @@
+{
+  "name": "@local/dsh-mobile-remote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phone takeover for DeepSeek Harness: scan a QR code, then list/chat/stop/switch models and answer questions from your phone over an incremental, offline-cached PWA.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib",
+    "web",
+    "locale",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}
