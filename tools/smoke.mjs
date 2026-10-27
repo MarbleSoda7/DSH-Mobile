@@ -96,10 +96,14 @@ const fakeController = {
   },
 }
 
+const fakeRegistry = { archivedSessionIds: [] }
+
 const ctx = {
   sessionController: fakeController,
   get(name) {
-    return name === 'sessionController' ? fakeController : undefined
+    if (name === 'sessionController') return fakeController
+    if (name === 'workspaceRegistry') return fakeRegistry
+    return undefined
   },
   on(name, listener) {
     handlers.set(name, listener)

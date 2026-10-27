@@ -203,6 +203,7 @@ const request = (fn) => {
 const objectStore = (name) => ({
   put: (value) => request(() => { stores[name].set(value.key ?? value.id, value); return value.key ?? value.id }),
   get: (key) => request(() => stores[name].get(key)),
+  delete: (key) => request(() => { stores[name].delete(key); return undefined }),
   getAll: (range) => request(() => {
     const rows = Array.from(stores[name].values())
     if (!range) return rows
@@ -238,11 +239,15 @@ const localStorage = {
 const fetchCalls = []
 // page 的返回内容可被用例改写（T11 翻页需要真返回更早的事件）。
 let pageHandler = () => ({ ok: true, events: [], latestSeq: 0, hasMore: false })
+// /api/state 的返回内容也可被用例改写（T18 归档过滤要用真实的会话列表）。
+let stateHandler = null
 const fetchStub = async (url) => {
   const target = String(url)
   fetchCalls.push(target)
   const json = target.includes('/api/state')
-    ? { ok: true, sessions: [], hiddenBlank: 0, defaultModel: null }
+    ? stateHandler
+      ? stateHandler(target)
+      : { ok: true, sessions: [], hiddenBlank: 0, defaultModel: null }
     : target.includes('/api/catalog')
       ? { ok: true, catalog: { default: null, groups: [] } }
       : target.includes('/page')
@@ -272,7 +277,7 @@ const windowStub = { addEventListener: () => {} }
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console)
 
@@ -608,6 +613,32 @@ check('T17 结算后没有独立的已完成行', document.getElementById('trans
 const toolText = timelineText().join(' ')
 check('T17 结果字数补到同一行', toolText.includes('运行命令') && toolText.includes('9 字'), toolText.slice(0, 120))
 check('T17 结果详情可就地展开', (toolRows()[0]?.querySelector('.ev-detail')?.textContent || '').includes('a.js b.js'))
+
+// T18 电脑端归档会话后，服务端推 `sessions` 帧，客户端应重新拉 /api/state
+//     并在列表里把已归档的会话去掉（用户 m06926：「dsh上归档的对话手机上没有同步删除」）。
+console.log('T18 归档变化推 sessions 帧后列表刷新')
+{
+  app.state.sessions = new Map()
+  app.state.sessions.set('sess-alive', { id: 'sess-alive', title: '还在的会话', updatedAt: 2, blank: false })
+  app.state.sessions.set('sess-archived', { id: 'sess-archived', title: '已归档的会话', updatedAt: 1, blank: false })
+  app.renderSessions()
+  check(
+    'T18 归档前两个会话都在列表里',
+    document.getElementById('session-list').querySelectorAll('.session-item').length === 2,
+    String(document.getElementById('session-list').querySelectorAll('.session-item').length),
+  )
+  // 服务端过滤归档后的真实响应形状
+  stateHandler = () => ({ ok: true, sessions: [{ id: 'sess-alive', title: '还在的会话', updatedAt: 2, blank: false }], hiddenBlank: 0, hiddenArchived: 1 })
+  app.handleFrame('sessions', { at: Date.now() })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  const rows = document.getElementById('session-list').querySelectorAll('.session-item')
+  check('T18 收到 sessions 帧后已归档会话消失', rows.length === 1, String(rows.length))
+  check(
+    'T18 剩下的是没归档的那个',
+    timelineText().length >= 0 && rows[0]?.textContent.includes('还在的会话'),
+    rows[0]?.textContent || '',
+  )
+}
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
 if (expectBug) {

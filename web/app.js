@@ -31,6 +31,8 @@ const state = {
   pending: [],
   queues: new Map(),
   queueIndex: new Map(),
+  // 上一次真正渲染出来的排队条下标：用来判断"是不是切换了"，切换才播淡入淡出。
+  queueShownAt: new Map(),
   // 电脑端插话先到的合成气泡：message.id -> DOM 节点。真 user/message 到达时按 id 替换。
   steerNodes: new Map(),
   editingQueue: '',
@@ -85,6 +87,7 @@ const idb = {
   put: (store, value) => wrap(tx(store, 'readwrite').put(value)),
   get: (store, key) => wrap(tx(store).get(key)),
   all: (store) => wrap(tx(store).getAll()),
+  delete: (store, key) => wrap(tx(store, 'readwrite').delete(key)),
   prefix: (store, prefix) => wrap(tx(store).getAll(IDBKeyRange.bound(prefix, prefix + '\uffff'))),
 }
 
@@ -396,9 +399,19 @@ async function refreshState() {
     state.sessions.set(session.id, session)
     if (typeof session.running === 'boolean') state.running.set(session.id, session.running)
   }
-  // 服务端已经删掉的会话，本地一并清掉
+  // 服务端已经删掉/归档掉的会话，本地一并清掉。
+  // 不清的话它会以"本地记忆"的形式永远留在列表里（服务端已经过滤了归档，
+  // 这里不清就等于归档永远不生效）。
   const alive = new Set(data.sessions.map((session) => session.id))
-  for (const id of Array.from(state.sessions.keys())) if (!alive.has(id)) state.sessions.delete(id)
+  const dropped = []
+  for (const id of Array.from(state.sessions.keys())) {
+    if (alive.has(id)) continue
+    state.sessions.delete(id)
+    dropped.push(id)
+  }
+  for (const id of dropped) await idb.delete('sessions', id).catch(() => {})
+  if (typeof data.sessionsRev === 'number') state.sessionsRev = Math.max(state.sessionsRev || 0, data.sessionsRev)
+  state.sessionsStale = false
   saveSessions()
   renderSessions()
   if (state.current) renderChatHeader()
@@ -917,7 +930,7 @@ function appendReasoningRows(box, message, ctx = {}) {
   let count = 0
   for (const block of blocks(message)) {
     if (block.type !== 'reasoning' || !block.text) continue
-    const row = eventRow({ icon: '⊗', verb: '思考', target: clip(block.text, 60), className: 'ev-think' })
+    const row = eventRow({ icon: '✦', verb: '思考', target: clip(block.text, 60), className: 'ev-think' })
     const detail = block.truncated
       ? `${block.text}\n\n…（思考共 ${block.truncated.total} 字，这里显示前 ${block.truncated.shown} 字）`
       : block.text
@@ -1192,7 +1205,12 @@ function prependOlder(events) {
   state.seen = pendingBefore
   const nodes = Array.from(holder.children || [])
   const anchor = realBox.firstChild || null
-  for (const node of nodes) realBox.insertBefore(node, anchor)
+  for (const node of nodes) {
+    if (node.classList) node.classList.add('older-in')
+    realBox.insertBefore(node, anchor)
+  }
+  // 淡入动画只动透明度，不改高度：滚动锚定在同一帧里已经补偿过，
+  // 所以"内容从上方长出来"时用户盯着的那一行不会位移（避免视觉跳变）。
 }
 
 // 翻到头了给一行提示（只画一次，避免每次上滑都重复）。
@@ -1418,6 +1436,9 @@ async function pollOnce() {
     for (const frame of data.frames || []) handleFrame(frame.type, frame.payload)
     // 长轮询没有 hello 帧：每次响应都带一份运行状态快照，用它同步会话列表。
     if (data.status && typeof data.status === 'object') applyStatuses(data.status)
+    // 会话集合版本号：长轮询被别的事件抢先唤醒时不会带 sessions 帧，
+    // 但版本号每次响应都带，所以这里补一次比对就不会漏掉归档变化。
+    applySessionsRev(data.sessionsRev)
     state.retry = 0
     setConn('on', '省流模式')
     ok = true
@@ -1472,6 +1493,8 @@ function handleFrame(type, payload) {
     // 各会话运行状态：一连上就按服务端给的值刷新列表，不用等下一次 turn/start。
     // 还顺手补发了其它设备的"运行中"，避免会话列表显示成静止。
     applyStatuses(payload && payload.status)
+    // 会话集合版本号（归档/新建/删除）：连上就对齐，别等下一次推送。
+    applySessionsRev(payload && payload.sessionsRev)
     // 断线期间漏帧自愈：服务端告诉我们各会话的最大 seq，比本地游标新就补一次。
     const latest = payload && payload.latest
     if (latest && typeof latest === 'object') {
@@ -1614,7 +1637,32 @@ function handleFrame(type, payload) {
   }
   if (type === 'approval') {
     toast(`需要审批：${payload.toolName || '操作'}（请在电脑上确认）`, 4000)
+    return
   }
+  if (type === 'sessions') {
+    // 电脑端归档 / 取消归档 / 新建会话后，服务端只推一个"列表变了"的信号，
+    // 真正的数据仍由 /api/state 拉取（不在推送里塞整张表，省流量）。
+    state.sessionsRev = Math.max(state.sessionsRev || 0, Number(payload && payload.sessionsRev) || 0)
+    state.sessionsStale = true
+    refreshState().catch(() => {})
+    return
+  }
+  // 长轮询响应里带的版本号：比本地新就说明错过了 sessions 帧（轮询被别的事件抢先唤醒），
+  // 补一次拉取，否则"电脑上归档了、手机还显示"会一直挂着。
+  if (type === 'poll-rev') {
+    applySessionsRev(payload && payload.sessionsRev)
+  }
+}
+
+/** 会话表版本号：落后就标记为过期并重新拉 /api/state。
+ * 只比数字、不传整表，既省流量，也不会因为某次推送被别的事件抢先而永久漏掉。 */
+function applySessionsRev(rev) {
+  const next = Number(rev)
+  if (!Number.isFinite(next) || next <= 0) return
+  if (next <= (state.sessionsRev || 0)) return
+  state.sessionsRev = next
+  state.sessionsStale = true
+  refreshState().catch(() => {})
 }
 
 function scheduleReconnect() {
@@ -1830,16 +1878,26 @@ function renderQueue() {
   const box = $('queue')
   if (!box) return
   const items = state.queues.get(state.current) || []
+  // 当前显示的是第几条：切换时做一个淡入淡出，别硬切（用户要求"不要跳变"）。
+  const prevIndex = queueShownAt.get(state.current)
+  queueShownAt.set(state.current, clampQueueIndex(items))
   box.innerHTML = ''
   box.classList.toggle('hidden', items.length === 0)
-  // 多条排队消息时，一次只展开一条，左右滑动切换（用户要的"上下切换消息"，
-  // 手机竖屏里更自然的手势是左右滑；这里两者都支持）。
+  // 多条排队消息时，一次只展开一条，上下滑动切换（用户要的"上下切换消息"）。
   // 用单条可视高度，避免队列条把整个聊天区挤没。
   const index = clampQueueIndex(items)
+  const swapped = items.length > 1 && prevIndex !== undefined && prevIndex !== index
+  if (swapped) {
+    // 重新触发动画：先摘掉类、强制回流、再加上。
+    box.classList.remove('queue-swap')
+    void box.offsetWidth
+    box.classList.add('queue-swap')
+  }
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i]
     const row = rowForItem(item)
     if (items.length > 1) row.style.display = i === index ? '' : 'none'
+    if (items.length > 1 && i === index && swapped) row.classList.add('queue-row-in')
     box.appendChild(row)
   }
   if (items.length > 1) box.appendChild(queuePager(items.length, index))

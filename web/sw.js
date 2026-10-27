@@ -4,7 +4,7 @@
  * v4：恢复被误覆盖的 app.js 时一并提版本，确保所有已装 PWA 丢掉旧外壳。
  * v7：Markdown 视觉重做 + 过程行类名修正 + 翻页重试，同样必须丢掉旧 CSS。
  * v9：排队条改为单条 + 上下滑动切换；过程行/滚动容器修正。 */
-const SHELL = 'dsh-mobile-shell-v9'
+const SHELL = 'dsh-mobile-shell-v10'
 const FILES = ['/', '/index.html', '/app.js', '/style.css', '/icon.svg', '/manifest.webmanifest']
 // 入口资源必须"先要网络"：装成 PWA 后只靠缓存回退，永远看不到修复后的代码。
 const NETWORK_FIRST = new Set(['/', '/index.html', '/app.js', '/style.css'])

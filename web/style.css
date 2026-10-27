@@ -462,6 +462,23 @@ body { padding: 0; }
   background: #0f131a; color: #e7eaf1; font-size: 14px; line-height: 1.45;
   border: 1px solid #2f3747; border-radius: 8px;
 }
+
+/* 上下切换排队消息时的淡入淡出：切换才播（由 renderQueue 的 swapped 判定加类）。
+   只动透明度与 4px 位移，不动高度，避免把上面的输入框顶来顶去。 */
+@keyframes queue-swap-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.queue-swap .queue-item {
+  animation: queue-swap-fade 170ms ease-out;
+}
+.queue-row-in {
+  animation: queue-swap-fade 170ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .queue-swap .queue-item,
+  .queue-row-in { animation: none; }
+}
 /* ---- Markdown ---- */
 .msg-text p { margin: 0 0 8px; }
 .msg-text p:last-child { margin-bottom: 0; }
@@ -622,6 +639,19 @@ body { padding: 0; }
   color: var(--muted);
   font-size: 12px;
   pointer-events: none;
+}
+
+/* 上滑加载出来的旧内容淡入：只改透明度，不改高度/位移，
+   这样滚动锚定补偿过的位置不会被动画二次推动（用户 m07051：「不要跳变」）。 */
+@keyframes older-in-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.older-in {
+  animation: older-in-fade 200ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .older-in { animation: none; }
 }
 
 /* 助手正文不套气泡，直接铺在背景上（对齐电脑版） */
