@@ -175,6 +175,40 @@ const hostMutation = (state, sid, spliced, { removed = [], inserted = [] } = {})
   }
 }
 
+/* ---- 10. 纯图片消息（用户直接贴图不写字）：必须成为一行，且带上图片张数 ---- */
+{
+  const imageCountOf = (m) => (Array.isArray(m?.content) ? m.content.filter((b) => b?.type === 'image').length : 0)
+  const state = createQueueState({ textOf, imageCountOf })
+  const TEXT = message('T1', '配一张图')
+  const ONLY = { id: 'I1', role: 'user', content: [{ type: 'image', attachment: { attachmentId: 'a1' } }, { type: 'image', attachment: { attachmentId: 'a2' } }] }
+  hostMutation(state, 'S', { target: 'next-turn', start: 0, inserted: [TEXT] }, { inserted: [TEXT] })
+  hostMutation(state, 'S', { target: 'next-turn', start: 1, inserted: [ONLY] }, { inserted: [ONLY] })
+  const rows = state.list('S')
+  check('16 纯图片排队消息不会被丢掉', rows.map((row) => row.itemId), ['T1', 'I1'])
+  check('17 纯图片行的正文为空、imageCount=2', rows[1] && { text: rows[1].text, imageCount: rows[1].imageCount }, { text: '', imageCount: 2 })
+  check('18 带文字带图的 imageCount 也记下来', rows[0].imageCount, 0)
+}
+
+/* ---- 11. 真正空的消息（没字也没图）仍然不显示 ---- */
+{
+  const imageCountOf = () => 0
+  const state = createQueueState({ textOf, imageCountOf })
+  const EMPTY = { id: 'E1', role: 'user', content: [] }
+  state.inserted('S', EMPTY)
+  check('19 空消息依然不进排队框', state.list('S').length, 0)
+}
+
+/* ---- 12. spliced 重建后 imageCount 不丢 ---- */
+{
+  const imageCountOf = (m) => (Array.isArray(m?.content) ? m.content.filter((b) => b?.type === 'image').length : 0)
+  const state = createQueueState({ textOf, imageCountOf })
+  const ONLY = { id: 'I2', role: 'user', content: [{ type: 'image', attachment: { attachmentId: 'a3' } }] }
+  state.set('S', [{ itemId: 'I2', text: '', imageCount: 1, at: 1 }])
+  state.applySpliced('S', { target: 'next-turn', start: 0, removedCount: 0, inserted: [ONLY] })
+  const row = state.list('S').find((item) => item.itemId === 'I2')
+  check('20 重建后 imageCount 保持 1', row && row.imageCount, 1)
+}
+
 if (failed) {
   console.log(`QUEUE_STATE_FAILED (${failed})`)
   process.exit(1)

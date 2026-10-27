@@ -346,6 +346,8 @@ async function attachmentUrl(hash) {
 }
 
 function imageNode(attachment) {
+  // 本地只知道"有几张图"（排队/插话的乐观渲染）：画占位块，别留空白。
+  if (Number(attachment?.pendingCount) > 0) return pendingFigureNode(Number(attachment.pendingCount), '插话图片')
   // 本地待发送/刚发送的图片只有 blob 预览地址，没有 attachmentId —— 直接用它显示，
   // 否则乐观气泡里的图片会一直是"读取失败"。
   if (attachment?.previewUrl && !attachment?.attachmentId) {
@@ -380,6 +382,16 @@ function imageNode(attachment) {
     if (url) img.src = url
     else wrap.textContent = `［图片 ${attachment?.name || hash.slice(0, 8)} 读取失败］`
   })
+  return wrap
+}
+
+/* 图片占位块：排队/插话时本地只知道"有几张图"，拿不到图片本身
+ * （服务端的排队快照只回 imageCount，不回 base64，省流量）。
+ * 不占位的话，纯图片消息在气泡里就是一片空白，用户会以为图丢了。 */
+function pendingFigureNode(count, hint = '图片') {
+  const wrap = document.createElement('figure')
+  wrap.className = 'msg-figure msg-figure-pending'
+  wrap.textContent = `🖼 ${hint} ${count} 张`
   return wrap
 }
 
@@ -2027,7 +2039,10 @@ function handleFrame(type, payload) {
     if (!payload || payload.sessionId !== state.current) return
     const id = payload.id || ''
     const text = payload.text || ''
-    if (!id || !text) return
+    const imageCount = Number(payload.imageCount) || 0
+    // 纯图片插话（电脑端贴图直接发）没有正文：不能因为 text 为空就把整条丢掉，
+    // 否则手机端"电脑上插了话却什么都看不到"（用户反馈）。
+    if (!id || (!text && imageCount === 0)) return
     const pendingIndex = state.pending.findIndex(
       (row) => row.sessionId === state.current && normText(row.text) === normText(text),
     )
@@ -2035,15 +2050,20 @@ function handleFrame(type, payload) {
     const existing = state.steerNodes.get(id)
     if (existing) {
       existing.querySelector('.msg-text')?.replaceChildren(document.createTextNode(text))
+      existing.querySelector('.msg-figure-pending')?.remove()
+      if (imageCount > 0) existing.appendChild(pendingFigureNode(imageCount, '插话图片'))
       if (pendingIndex >= 0) reflow()
       return
     }
     const node = makeMessageNode('user')
     node.appendChild(roleNode('你'))
-    const body = document.createElement('div')
-    body.className = 'msg-text'
-    body.textContent = text
-    node.appendChild(body)
+    if (text) {
+      const body = document.createElement('div')
+      body.className = 'msg-text'
+      body.textContent = text
+      node.appendChild(body)
+    }
+    if (imageCount > 0) node.appendChild(pendingFigureNode(imageCount, '插话图片'))
     node.dataset.steerId = id
     $('transcript').appendChild(node)
     state.steerNodes.set(id, node)
@@ -2386,10 +2406,19 @@ function rowForItem(item) {
   if (state.editingQueue === item.itemId) return queueEditRow(item)
   const row = document.createElement('div')
   row.className = `queue-item${item.pending ? ' pending' : ''}`
+  const imageCount = Number(item.imageCount) || 0
   const text = document.createElement('div')
   text.className = 'queue-text'
-  text.textContent = item.text || '（无文字内容）'
+  text.textContent = item.text || (imageCount > 0 ? `图片 ${imageCount} 张` : '（无文字内容）')
   row.appendChild(text)
+  if (imageCount > 0) {
+    // 排队行必须让人看出"这条带图"，否则纯图片排队看起来像一条空消息。
+    const tag = document.createElement('span')
+    tag.className = 'queue-images'
+    tag.textContent = `🖼 ${imageCount}`
+    tag.title = `包含 ${imageCount} 张图片`
+    row.appendChild(tag)
+  }
   if (item.pending) {
     // 服务端还没确认，先占位，不给编辑/删除按钮
     const tag = document.createElement('span')
@@ -2398,10 +2427,14 @@ function rowForItem(item) {
     row.appendChild(tag)
     return row
   }
-  row.appendChild(queueButton('✎', '编辑', () => {
-    state.editingQueue = item.itemId
-    renderQueue()
-  }))
+  // 带图片的排队消息不给编辑入口：宿主 updateQueue 的 edit 只收文本块，
+  // 一编辑图片就永久丢了（服务端也会拒，这里先不给按钮，省一次白跑）。
+  if (imageCount === 0) {
+    row.appendChild(queueButton('✎', '编辑', () => {
+      state.editingQueue = item.itemId
+      renderQueue()
+    }))
+  }
   row.appendChild(queueButton('🗑', '删除', () => queueAction(item, 'remove')))
   row.appendChild(queueButton('↑', '插话到本轮', () => queueAction(item, 'steer')))
   return row
@@ -2463,15 +2496,27 @@ async function queueAction(item, action, text) {
   }
   const optimisticSeq = action === 'steer' ? -Date.now() : 0
   if (action === 'steer') {
+    // 插话后立刻出现的"你"气泡也要能看出带了图（本地没有 base64，只有张数）。
+    const imageCount = Number(item.imageCount) || 0
     const optimistic = {
       type: 'user/message',
       seq: optimisticSeq,
       sessionId,
       time: Date.now(),
       optimistic: true,
-      data: { message: { role: 'user', content: [{ type: 'text', text: item.text || '' }] } },
+      data: {
+        message: {
+          role: 'user',
+          content: [
+            ...(item.text ? [{ type: 'text', text: item.text }] : []),
+            ...(imageCount > 0
+              ? [{ type: 'image', attachment: { attachmentId: '', mediaType: '', name: '', pendingCount: imageCount } }]
+              : []),
+          ],
+        },
+      },
     }
-    pendingPush(sessionId, optimisticSeq, item.text || '', optimistic)
+    pendingPush(sessionId, optimisticSeq, item.text || `[${imageCount} 张图片]`, optimistic)
     appendEvent(optimistic)
     scrollBottom()
     toast('已插话到本轮')
@@ -2604,7 +2649,13 @@ async function send(mode = 'auto') {
   // 而不是先出现一个聊天气泡（那会让人以为已经发出去了，等半天才有排队框）。
   // 所以运行中只插排队占位，气泡留给宿主的 user/message 事件。
   if (effective === 'queue' && running) {
-    const placeholder = { itemId: `pending-${Date.now()}`, text: text || `[${images.length} 张图片]`, at: Date.now(), pending: true }
+    const placeholder = {
+      itemId: `pending-${Date.now()}`,
+      text: text || `[${images.length} 张图片]`,
+      imageCount: images.length,
+      at: Date.now(),
+      pending: true,
+    }
     const rows = state.queues.get(sessionId) || []
     state.queues.set(sessionId, [...rows, placeholder])
     if (sessionId === state.current) renderQueue()
@@ -2645,17 +2696,59 @@ async function send(mode = 'auto') {
   }
 }
 
-// 显式插话：只在"本轮正在跑"时有意义，按钮长按/独立入口才会走到这里。
+// 显式插话：只在"本轮正在跑"时有意义，长按发送键（或排队条的 ↑）才会走到这里。
+// 纯图片插话必须放行：以前这里 `if (!text) return`，导致"贴张图长按发送"毫无反应。
 async function steerNow() {
   const area = $('composer')
   const text = area.value.trim()
-  if (!text || !state.current) return
+  if ((!text && state.attachments.length === 0) || !state.current) return
   const sessionId = state.current
   if (!(state.turnOpen.get(sessionId) === true || state.running.get(sessionId) === true)) {
     toast('当前没有正在执行的回合，直接发送即可')
     return
   }
   await send('steer')
+}
+
+/* 发送键的两个动作：
+ *   点一下   → send('auto')，也就是排队（与电脑端 DSH 的默认行为一致）；
+ *   长按 500ms → steerNow()，插话到正在跑的这一轮里。
+ * 手机上没有第二个按钮的位置，长按是最省空间的做法；排队条里的 ↑ 也还能插话，
+ * 两条路都通。onclick 在长按抬手后依然会触发，所以用 longPressed 标志吞掉那一次。
+ */
+const STEER_HOLD_MS = 500
+
+function bindSendButton() {
+  const button = $('btn-send')
+  if (!button) return
+  let timer = 0
+  let longPressed = false
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = 0
+    }
+  }
+  button.addEventListener('pointerdown', () => {
+    longPressed = false
+    cancel()
+    timer = setTimeout(() => {
+      timer = 0
+      longPressed = true
+      if (navigator.vibrate) navigator.vibrate(12)
+      steerNow()
+    }, STEER_HOLD_MS)
+  })
+  for (const event of ['pointerup', 'pointercancel', 'pointerleave']) {
+    button.addEventListener(event, cancel)
+  }
+  button.onclick = () => {
+    if (longPressed) {
+      longPressed = false
+      return
+    }
+    send('auto')
+  }
 }
 
 async function stopTurn() {
@@ -2746,7 +2839,8 @@ $('btn-refresh').onclick = async () => {
 $('btn-back').onclick = leaveChat
 $('btn-stop').onclick = stopTurn
 $('btn-model').onclick = openModelSheet
-$('btn-send').onclick = () => send('auto')
+$('btn-send').onclick = () => send('auto') // 先绑一次，bindSendButton 会覆盖它
+bindSendButton()
 bindAttach()
 $('q-submit').onclick = submitQuestion
 $('q-dismiss').onclick = closeQuestion

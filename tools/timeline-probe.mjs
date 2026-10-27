@@ -333,7 +333,7 @@ class FileReaderStub {
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
@@ -1027,6 +1027,53 @@ console.log('\nT27 一级展开在标题下方，标题原地不动')
 
   if (summary && typeof summary.onclick === 'function') summary.onclick()
   check('T27 收起后顺序依旧不变', order() === foldedOrder, order())
+}
+
+// T28/T29/T30 手机端「排队 / 插话」支持图片（用户 m00532）：
+//   以前纯图片消息（用户直接贴图不写字）在手机上是隐形的：服务端把没有正文的消息
+//   整条丢掉、客户端只拿 text、排队行只能显示文字。三条用例分别盯住三个断点。
+console.log('\nT28 纯图片插话在手机上要有气泡')
+{
+  reset()
+  app.handleFrame('steer', { sessionId: 'sess-A', id: 'img-msg-1', text: '', imageCount: 2, at: Date.now() })
+  const nodes = document.getElementById('transcript').children
+  const bubble = nodes.find((node) => node.classList && node.classList.contains('msg'))
+  check('T28 纯图片插话也画出气泡', Boolean(bubble), JSON.stringify(nodes.map((node) => node.className)))
+  check('T28 气泡里标出图片张数', Boolean(bubble) && bubble.textContent.includes('插话图片 2 张'), bubble && bubble.textContent)
+  reset()
+  app.handleFrame('steer', { sessionId: 'sess-A', id: 'msg-img-2', text: '看图', imageCount: 1, at: Date.now() })
+  const withText = document.getElementById('transcript').children.find((node) => node.classList && node.classList.contains('msg'))
+  check('T28 带文字带图：文字和图块都在', Boolean(withText) && withText.textContent.includes('看图') && withText.textContent.includes('插话图片 1 张'), withText && withText.textContent)
+}
+
+console.log('\nT29 排队行要显示 🖼 张数、带图的不给编辑入口')
+{
+  const row = app.rowForItem({ itemId: 'q1', text: '', imageCount: 2, at: Date.now() })
+  check('T29 纯图片排队行有文字兜底', row.textContent.includes('图片 2 张'), row.textContent)
+  check('T29 排队行标出 🖼 2', row.textContent.includes('🖼 2'), row.textContent)
+  const buttons = row.children.filter((node) => typeof node.onclick === 'function')
+  check('T29 带图的排队行没有编辑按钮', !row.textContent.includes('✎'), row.textContent)
+  check('T29 删除/插话按钮还在', row.textContent.includes('🗑') && row.textContent.includes('↑'), row.textContent + ' | buttons=' + buttons.length)
+  const plain = app.rowForItem({ itemId: 'q2', text: '普通排队', imageCount: 0, at: Date.now() })
+  check('T29 没图的排队行照旧可以编辑', plain.textContent.includes('✎'), plain.textContent)
+}
+
+console.log('\nT30 运行中发图片：排队占位行要带 imageCount')
+{
+  reset()
+  app.state.current = 'sess-A'
+  app.state.turnOpen.set('sess-A', true)
+  app.state.attachments = [{ data: 'AAAA', mediaType: 'image/png', name: 'a.png', url: '' }]
+  await app.send('auto')
+  const sent = fetchBodies.filter((row) => row.url.includes('/api/prompt')).pop()
+  const body = (sent && sent.body) || {}
+  check('T30 运行中发图片走的是 queue 模式（不是插话）', body.mode === 'queue', JSON.stringify(body))
+  check('T30 图片跟着排队消息一起发出去', Array.isArray(body.images) && body.images.length === 1, JSON.stringify(body.images))
+  check('T30 纯图片消息允许没有正文', body.text === '', JSON.stringify(body.text))
+  check('T30 发送成功后待发送图片被清空', app.state.attachments.length === 0, String(app.state.attachments.length))
+  app.state.turnOpen.delete('sess-A')
+  app.state.attachments = []
+  app.state.queues = new Map()
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
