@@ -44,6 +44,9 @@ const state = {
   queueIndex: new Map(),
   // 上一次真正渲染出来的排队条下标：用来判断"是不是切换了"，切换才播淡入淡出。
   queueShownAt: new Map(),
+  // 最近在本地改过/删过的排队条目：{ sessionId -> Map<itemId, {at, text?, removed?}> }。
+  // 服务端快照可能比本地旧（长轮询挂起期间算的），这段时间内以本地为准。
+  queueTouched: new Map(),
   // 电脑端插话先到的合成气泡：message.id -> DOM 节点。真 user/message 到达时按 id 替换。
   steerNodes: new Map(),
   editingQueue: '',
@@ -1548,6 +1551,20 @@ function reflow() {
  * 历史 bug：整张表没有会话归属，openChat 切换时不清，reflow() 又无条件重画
  * → 在会话 A 发的消息，切到会话 B 后被渲染进 B 的时间线。 */
 const PENDING_TTL = 120_000
+// 本地排队改动（编辑/删除/插话）在多长时间内压过服务端快照。
+// 取 2.5 秒：足够覆盖一次长轮询往返 + 宿主 updateQueue 的确认，
+// 又不会长到把宿主的真实变化挡住（宿主的 splice 帧会带来权威结果）。
+const QUEUE_TOUCH_MS = 2500
+
+/** 记下"这个条目刚被本地改过"，短时间内不让旧快照覆盖回去。 */
+function touchQueue(sessionId, itemId, patch = {}) {
+  let map = state.queueTouched.get(sessionId)
+  if (!map) {
+    map = new Map()
+    state.queueTouched.set(sessionId, map)
+  }
+  map.set(itemId, { at: Date.now(), ...(map.get(itemId) || {}), ...patch })
+}
 
 function pendingPush(sessionId, seq, text, event) {
   state.pending.push({ sessionId, seq, text, at: Date.now(), event })
@@ -1884,17 +1901,36 @@ function handleFrame(type, payload) {
   }
   if (type === 'queue') {
     const items = Array.isArray(payload.items) ? payload.items : []
-    // 服务端是唯一真源。本地"发送中…"占位只在**很短的时间窗**内保留（刚发出、
-    // 服务端还没认下的那一两百毫秒）；超过 6 秒还没出现在服务端队列里，就认为它
-    // 已经被取走或失败，直接丢掉——否则它会永远挂在手机上当"排队中"。
-    const texts = new Set(items.map((row) => row.text))
+    // 服务端是唯一真源，但它可能带回"上一刻"的快照（长轮询挂起期间算好的、
+    // 或帧在写盘路上）。用户刚点过编辑/删除的那一小段窗口里，以本地为准，
+    // 否则会出现"点了保存却弹回旧文本""删了又冒出来"的观感。
+    const touches = state.queueTouched.get(payload.sessionId) || new Map()
     const now = Date.now()
+    for (const [itemId, info] of touches) {
+      if (now - info.at > QUEUE_TOUCH_MS) touches.delete(itemId)
+    }
+    const serverItems = items.map((row) => {
+      const info = touches.get(row.itemId)
+      if (!info) return row
+      // 本地改过文本：保留本地的，别被旧快照覆盖。
+      if (info.text !== undefined && row.text !== info.text) return { ...row, text: info.text }
+      return row
+    })
+    // 本地刚删掉/插话掉的条目：快照里还有它也别加回来（等宿主 splice 确认）。
+    const alive = serverItems.filter((row) => {
+      const info = touches.get(row.itemId)
+      return !(info && info.removed)
+    })
+    // 本地"发送中…"占位只在**很短的时间窗**内保留（刚发出、服务端还没认下的
+    // 那一两百毫秒）；超过 6 秒还没出现在服务端队列里，就认为它已经被取走或
+    // 失败，直接丢掉——否则它会永远挂在手机上当"排队中"。
+    const texts = new Set(alive.map((row) => row.text))
     const kept = (state.queues.get(payload.sessionId) || []).filter((row) => {
       if (!row.pending) return false
       if (texts.has(row.text)) return false
       return now - (row.at || 0) < 6000
     })
-    const merged = [...items]
+    const merged = [...alive]
     for (const row of kept) merged.push(row)
     state.queues.set(payload.sessionId, merged)
     if (payload.sessionId === state.current) renderQueue()
@@ -2247,34 +2283,70 @@ function dropQueueRow(itemId, sessionId = state.current) {
   if (sessionId === state.current) renderQueue()
 }
 
+/* 本地先改、再发请求：网络往返哪怕只有几十毫秒，用户点了"保存"却看到旧文本
+ * 也会以为没生效（用户实测："看似没修改，实际已经修改好了"）。所以三个动作都
+ * 立刻改本地，失败再回滚。 */
+function setQueueText(itemId, text, sessionId = state.current) {
+  const rows = state.queues.get(sessionId) || []
+  state.queues.set(sessionId, rows.map((row) => (row.itemId === itemId ? { ...row, text } : row)))
+  if (sessionId === state.current) renderQueue()
+}
+
 async function queueAction(item, action, text) {
   if (!state.current) return
+  const sessionId = state.current
+  const snapshot = (state.queues.get(sessionId) || []).slice()
+  // 立刻反映到界面：编辑改文本、删除/插话摘掉行；插话还要立刻出现"你"的气泡。
+  if (action === 'edit' && typeof text === 'string') {
+    setQueueText(item.itemId, text)
+    touchQueue(sessionId, item.itemId, { text })
+  }
+  if (action === 'remove' || action === 'steer') {
+    dropQueueRow(item.itemId)
+    touchQueue(sessionId, item.itemId, { removed: true })
+  }
+  const optimisticSeq = action === 'steer' ? -Date.now() : 0
+  if (action === 'steer') {
+    const optimistic = {
+      type: 'user/message',
+      seq: optimisticSeq,
+      sessionId,
+      time: Date.now(),
+      optimistic: true,
+      data: { message: { role: 'user', content: [{ type: 'text', text: item.text || '' }] } },
+    }
+    pendingPush(sessionId, optimisticSeq, item.text || '', optimistic)
+    appendEvent(optimistic)
+    scrollBottom()
+    toast('已插话到本轮')
+  }
   try {
     await api('/api/queue', {
       method: 'POST',
       body: JSON.stringify({
-        sessionId: state.current,
+        sessionId,
         itemId: item.itemId,
         action,
         ...(typeof text === 'string' ? { text } : {}),
       }),
     })
-    if (action === 'remove') dropQueueRow(item.itemId)
-    else if (action === 'steer') {
-      // 插话 = 这条消息进到当前这一步，不再是排队消息：立刻从排队框里摘掉，
-      // 不要等下一帧 queue（等待期间用户会看到一条"插不进去的幽灵行"）。
-      dropQueueRow(item.itemId)
-      toast('已插话到本轮')
-    }
   } catch (error) {
+    // 回滚到点之前的样子，别让用户对着一份"假成功"的队列。
+    state.queues.set(sessionId, snapshot)
+    state.queueTouched.delete(sessionId)
+    if (sessionId === state.current) renderQueue()
+    if (optimisticSeq) {
+      dropPending(sessionId, optimisticSeq)
+      if (sessionId === state.current) reflow()
+    }
     if (error && error.code === 'queue-stale') {
-      dropQueueRow(item.itemId)
+      dropQueueRow(item.itemId, sessionId)
       toast('这条排队消息已经不在队列里了，已从列表移除')
       return
     }
     if (error && error.code === 'steer-unavailable') {
       toast('这一轮已经不能再插话了')
-      loadQueue(state.current)
+      loadQueue(sessionId)
       return
     }
     toast(error.message)

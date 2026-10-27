@@ -303,7 +303,7 @@ class FileReaderStub {
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
@@ -336,6 +336,9 @@ function reset(sessionId = 'sess-A') {
   app.state.seen = new Set()
   app.state.pending = []
   app.state.queues = new Map()
+  app.state.queueTouched = new Map()
+  app.state.queueIndex = new Map()
+  app.state.queueShownAt = new Map()
   app.state.steerNodes = new Map()
   app.state.older = new Map()
   app.state.olderDone = new Set()
@@ -841,6 +844,40 @@ console.log('T22 排队条占位与服务端快照合并')
   })
   const index = app.state.queueIndex.get('sess-A')
   check('T22 队列变短后下标被夹到范围内', index >= 0 && index <= 1, String(index))
+}
+
+console.log('\nT24 本地改动不被旧快照覆盖（用户 m08363：编辑/删除/插话看起来没生效）')
+{
+  reset()
+  app.state.current = 'sess-A'
+  app.state.queues.set('sess-A', [{ itemId: 'x1', text: '排队甲', at: Date.now() }])
+  // 用户点了编辑：本地立刻变成新文本，同时打上 touch 标记。
+  app.setQueueText('x1', '排队甲已编辑')
+  app.touchQueue('sess-A', 'x1', { text: '排队甲已编辑' })
+  const immediately = (app.state.queues.get('sess-A') || [])[0].text
+  check('T24 编辑立刻反映到本地队列', immediately === '排队甲已编辑', immediately)
+
+  // 服务端旧快照（改之前的文本）此刻才到：不能把本地新文本覆盖回去。
+  app.handleFrame('queue', { sessionId: 'sess-A', items: [{ itemId: 'x1', text: '排队甲', at: Date.now() }] })
+  const afterStale = (app.state.queues.get('sess-A') || [])[0].text
+  check('T24 旧快照不覆盖刚编辑的文本', afterStale === '排队甲已编辑', afterStale)
+
+  // touch 过期之后，服务端就是权威：新快照要能正常生效。
+  app.state.queueTouched.get('sess-A').get('x1').at = Date.now() - 5000
+  app.handleFrame('queue', { sessionId: 'sess-A', items: [{ itemId: 'x1', text: '服务端后来的文本', at: Date.now() }] })
+  const afterExpire = (app.state.queues.get('sess-A') || [])[0].text
+  check('T24 touch 过期后接受服务端新值', afterExpire === '服务端后来的文本', afterExpire)
+
+  // 用户点了删除：旧快照里还有这条，也不能把它加回来。
+  reset()
+  app.state.current = 'sess-A'
+  app.state.queues.set('sess-A', [{ itemId: 'y1', text: '要删掉的', at: Date.now() }])
+  app.dropQueueRow('y1')
+  app.touchQueue('sess-A', 'y1', { removed: true })
+  check('T24 删除立刻从本地队列消失', (app.state.queues.get('sess-A') || []).length === 0, String((app.state.queues.get('sess-A') || []).length))
+  app.handleFrame('queue', { sessionId: 'sess-A', items: [{ itemId: 'y1', text: '要删掉的', at: Date.now() }] })
+  const afterRemove = (app.state.queues.get('sess-A') || []).length
+  check('T24 旧快照不会让已删除的条目复活', afterRemove === 0, String(afterRemove))
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
