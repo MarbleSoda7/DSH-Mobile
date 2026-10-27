@@ -1052,18 +1052,31 @@ function appendTurnSummary(endAt, before = null) {
   return row
 }
 
-// 这一轮里挂在「已完成」上面的过程行：从 summaryRow 往上数，遇到上一个 turn-mark 停。
-// 只收 .ev-wrap（思考 / 运行命令 / 读取 / 编辑 …），正文气泡和分隔线不动。
+// 这一轮里属于「已完成」的过程行（思考 / 运行命令 / 读取 / 编辑 …），只收 .ev-wrap，
+// 正文气泡、分隔线、上一个 turn-mark 之前的都不动。
+// 结构上优先认「汇总行下面的连续 ev-wrap」（stowTurnProcess 会把它们挪到下面），
+// 同时兼容汇总行上面的老位置，这样无论谁先跑都能收干净。
 function turnProcessNodes(summaryRow) {
   const box = $('transcript')
   const children = Array.from(box.children || [])
-  let index = children.indexOf(summaryRow) - 1
+  const index = children.indexOf(summaryRow)
+  if (index < 0) return []
   const targets = []
-  while (index >= 0) {
-    const node = children[index]
-    if (node.classList && node.classList.contains('turn-mark')) break
+  // 1) 汇总行上方：往上数到本轮 turn-mark / 上一条正文为止
+  let back = index - 1
+  while (back >= 0) {
+    const node = children[back]
+    if (node.classList && (node.classList.contains('turn-mark') || node.classList.contains('msg'))) break
+    if (node.classList && node.classList.contains('ev-wrap')) targets.unshift(node)
+    back -= 1
+  }
+  // 2) 汇总行下方：往下数到「正文气泡 / 下一轮」为止
+  let forward = index + 1
+  while (forward < children.length) {
+    const node = children[forward]
+    if (node.classList && (node.classList.contains('turn-mark') || node.classList.contains('msg') || node.classList.contains('turn-summary'))) break
     if (node.classList && node.classList.contains('ev-wrap')) targets.push(node)
-    index -= 1
+    forward += 1
   }
   return targets
 }
@@ -1072,7 +1085,22 @@ function turnProcessNodes(summaryRow) {
 // 注意这里不用 .open —— .open 是二级状态（展开某一条的完整内容）。
 // 一级只做"从屏幕上撤掉"，屏幕上只剩一行「已完成」+ 正式回答。
 function stowTurnProcess(summaryRow) {
-  for (const node of turnProcessNodes(summaryRow)) {
+  const box = $('transcript')
+  const targets = turnProcessNodes(summaryRow)
+  // 位置很关键（用户 m00261）：过程行必须排在汇总行**下面**。
+  // 原来它们在汇总行上面，一级展开时内容把标题顶下去一大截，
+  // 「已完成 / 已思考」跑到屏幕外，想收起还得往下翻回去找。
+  // 现在统一挪到汇总行之后：展开就往标题下方长，标题原地不动，点一下就能收起。
+  let anchor = summaryRow
+  for (const node of targets) {
+    if (node.previousSibling === anchor) {
+      anchor = node
+      continue
+    }
+    box.insertBefore(node, anchor.nextSibling)
+    anchor = node
+  }
+  for (const node of targets) {
     node.classList.add('ev-stowed')
     node.classList.remove('open')
     const row = node.children && node.children[0]

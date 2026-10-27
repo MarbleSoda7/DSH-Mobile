@@ -54,6 +54,25 @@ class El {
     this.value = ''
     this.uid = ++idSeq
   }
+  // 真实 DOM 的兄弟/父指针。app.js 里"把过程行挪到汇总行下面"用的是
+  // insertBefore(node, anchor.nextSibling)，替身缺这个 getter 时会退化成 append 到末尾
+  // （T27 因此假失败）。这里补齐，保证"移动"语义和浏览器一致。
+  get parentNode() { return this.parent || null }
+  get nextSibling() {
+    const owner = this.parent
+    if (!owner || !Array.isArray(owner.children)) return null
+    const index = owner.children.indexOf(this)
+    return index >= 0 && index + 1 < owner.children.length ? owner.children[index + 1] : null
+  }
+  get previousSibling() {
+    const owner = this.parent
+    if (!owner || !Array.isArray(owner.children)) return null
+    const index = owner.children.indexOf(this)
+    return index > 0 ? owner.children[index - 1] : null
+  }
+  get firstChild() {
+    return this.children.length ? this.children[0] : null
+  }
   get isConnected() {
     let node = this
     while (node.parent) node = node.parent
@@ -89,16 +108,27 @@ class El {
     return own + this.children.map((child) => child.textContent).join('')
   }
   appendChild(child) {
+    this._detach(child)
     child.parent = this
     this.children.push(child)
     return child
   }
   insertBefore(child, ref) {
+    // 真实 DOM 的 insertBefore 是"移动"：先把节点从原父节点摘下来。
+    // 早期替身忘了这一步，于是"把过程行挪到汇总行下面"看起来成了复制一份（T27 抓到）。
+    this._detach(child)
     const index = this.children.indexOf(ref)
     child.parent = this
     if (index < 0) this.children.push(child)
     else this.children.splice(index, 0, child)
     return child
+  }
+  _detach(child) {
+    const owner = child && child.parent
+    if (!owner || !Array.isArray(owner.children)) return
+    const index = owner.children.indexOf(child)
+    if (index >= 0) owner.children.splice(index, 1)
+    child.parent = null
   }
   remove() {
     if (!this.parent) return
@@ -423,8 +453,9 @@ const summaryNode = box.children.find((node) => node.className && node.className
 const summaryText = summaryNode ? summaryNode.textContent.replace(/\s+/g, ' ').trim() : ''
 check('T6 一轮结束有「已完成，用时」汇总行', /已完成，用时 1 分 5 秒/.test(summaryText), summaryText)
 
-// T6d 汇总行的位置要跟电脑版一致：过程行 → 「已完成，用时 x」→ 正式回答。
-//      追加在最后会变成"回答完了才说已完成"（用户 m07850 明确要求改掉）。
+// T6d 汇总行位置：过程行 → 「已完成，用时 x」→ 正式回答 的"回答在最后"必须成立，
+//      但过程行要从汇总行**上面**挪到下面（用户 m00261：一级展开要在标题下方展开，
+//      否则标题被顶到屏幕外，想收起还得往下翻回去找）。
 reset()
 app.handleFrame('event', { type: 'turn/start', seq: 20, time: 2000, sessionId: 'sess-A', data: {} })
 app.handleFrame('event', {
@@ -437,8 +468,9 @@ const orderBox = document.getElementById('transcript')
 const orderClasses = orderBox.children.map((node) => node.className)
 const summaryIndex = orderClasses.findIndex((name) => name.includes('turn-summary'))
 const answerIndex = orderClasses.findIndex((name) => name.includes('msg') && name.includes('assistant'))
+const evIndex = orderClasses.findIndex((name) => name.includes('ev-wrap'))
 check('T6d 汇总行在正式回答之前', summaryIndex >= 0 && answerIndex > summaryIndex, JSON.stringify(orderClasses))
-check('T6d 汇总行在过程行之后', summaryIndex > orderClasses.findIndex((name) => name.includes('ev-wrap')), JSON.stringify(orderClasses))
+check('T6d 过程行排在汇总行下面（一级展开时标题不被顶走）', evIndex > summaryIndex && answerIndex > evIndex, JSON.stringify(orderClasses))
 
 // T25 两级折叠（用户 m08390 的要求）：
 //   ① 一轮结束，过程行必须整批藏进「已完成，用时 x」（不是只关掉详情，是根本不显示）；
@@ -947,6 +979,46 @@ console.log('\nT26 文件引用渲染成文件名芯片')
   const md = app.renderMarkdown('**改这里**\n\n[app.js:952](<D:\\SDU\\IC\\HarnessProject\\guide-dog-peta\\dsh-mobile-remote\\web\\app.js#L952>)\n')
   check('T26 整段 Markdown 里同样生效', md.includes('class="file-chip"') && !WINDOWS_PATH.test(visible(md)), visible(md))
   check('T26 加粗等其他语法没被破坏', md.includes('<strong>改这里</strong>'), md.slice(0, 200))
+}
+
+// T27 一级展开必须发生在标题"下方"（用户 m00261）：
+//   之前过程行排在「已完成 / 已思考」上面，点开一级时内容把标题顶下去一大截，
+//   标题跑到屏幕外，想收起还得往下翻回去找。现在标题固定在本轮第一位，内容往下长。
+console.log('\nT27 一级展开在标题下方，标题原地不动')
+{
+  reset()
+  app.handleFrame('event', { type: 'turn/start', seq: 40, time: 4000, sessionId: 'sess-A', data: {} })
+  app.handleFrame('event', {
+    type: 'assistant/message', seq: 41, time: 4100, sessionId: 'sess-A',
+    data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: '先看看目录再说' }] } },
+  })
+  app.handleFrame('event', {
+    type: 'tool/call', seq: 42, time: 4200, sessionId: 'sess-A',
+    data: { name: 'pwsh', arguments: '{"command":"dir"}', summary: { kind: 'cmd', verb: '运行命令', target: 'dir' } },
+  })
+  app.handleFrame('event', asstEv(43, '最终回答'))
+  app.handleFrame('event', { type: 'turn/end', seq: 44, time: 8000, sessionId: 'sess-A', data: { reason: { kind: 'completed' } } })
+
+  const box = document.getElementById('transcript')
+  // 顺序断言只看"节点身份序列"：一级展开会给标题加 .open（显示状态），不算顺序变化。
+  const order = () => box.children.map((node) => node.uid).join(',')
+  const summary = box.children.find((node) => node.className && node.className.includes('turn-summary'))
+  const answerNode = box.children.find((node) => node.classList && node.classList.contains('msg') && node.textContent.includes('最终回答'))
+  const summaryIndex = box.children.indexOf(summary)
+  const firstEv = box.children.findIndex((node) => node.classList && node.classList.contains('ev-wrap'))
+  check('T27 标题排在本轮最前（前面只有 turn-mark）', summaryIndex >= 0 && box.children.slice(0, summaryIndex).every((node) => node.classList.contains('turn-mark')),
+    JSON.stringify(box.children.map((node) => node.className)))
+
+  const foldedOrder = order()
+  if (summary && typeof summary.onclick === 'function') summary.onclick()
+  const openedOrder = order()
+  check('T27 展开不改变节点顺序（只切显示状态）', openedOrder === foldedOrder, openedOrder)
+  check('T27 展开后标题仍在最前', box.children.indexOf(summary) === summaryIndex, JSON.stringify(box.children.map((node) => node.className)))
+  check('T27 过程行紧跟标题向下排列', firstEv === summaryIndex + 1, String(firstEv) + ' vs ' + String(summaryIndex))
+  check('T27 回答气泡仍在过程行之后', box.children.indexOf(answerNode) > firstEv, JSON.stringify(box.children.map((node) => node.className)))
+
+  if (summary && typeof summary.onclick === 'function') summary.onclick()
+  check('T27 收起后顺序依旧不变', order() === foldedOrder, order())
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
