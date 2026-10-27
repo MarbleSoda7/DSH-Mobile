@@ -1539,7 +1539,11 @@ function applyDelta(payload) {
     }
   }
   const bodyNode = node.querySelector('.delta-body')
-  if (bodyNode) bodyNode.innerHTML = renderText(state.delta.text) || '<span class="muted">…</span>'
+  if (bodyNode) {
+    bodyNode.innerHTML = renderText(state.delta.text) || '<span class="delta-wait">运行中…</span>'
+  }
+  // 还没有正文时不要摆出一个"空气泡"：用户看到的就是一行"运行中…"。
+  node.classList.toggle('waiting', !state.delta.text)
   if (stick) scrollBottom()
 }
 

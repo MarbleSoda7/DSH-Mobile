@@ -225,6 +225,13 @@ body { padding: 0; }
 .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 5px; }
 .msg.assistant { align-self: flex-start; background: var(--bg-soft); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
 .msg.assistant.streaming { border-color: var(--accent-soft); }
+/* 还没开始输出正文（只有思考/工具在跑）时，整个气泡就只留一行「运行中…」：
+   头像标、思考摘要、蓝边空气泡这些都不要（用户反馈"这个样式不好看"）。
+   注意只靠 CSS 藏，.delta-think 的 class/内容照旧更新，正文一到立刻恢复常规气泡。 */
+.msg.assistant.streaming.waiting { border-color: var(--line); }
+.msg.assistant.streaming.waiting .role,
+.msg.assistant.streaming.waiting .delta-think { display: none; }
+.delta-wait { color: var(--muted); font-size: 13px; letter-spacing: 0.02em; }
 /* 流式正文容器：白空格保留，避免多段 delta 之间丢换行 */
 .delta-body { white-space: pre-wrap; overflow-wrap: anywhere; }
 /* 长消息/长输出的"展开全文"：贴在气泡底部，轻量、不抢视觉。 */

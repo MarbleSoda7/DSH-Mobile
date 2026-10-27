@@ -1222,6 +1222,26 @@ console.log('\nT33 点带图排队行的编辑：先弹确认，取消就不进�
   app.state.editingQueue = ''
 }
 
+console.log('\nT34 流式期间还没正文：只显示「运行中…」')
+{
+  reset()
+  app.state.current = 'sess-A'
+  app.applyDelta({ sessionId: 'sess-A', text: '', reasoning: '正在想办法', streaming: true })
+  const node = document.getElementById('transcript').children.find((n) => n.classList && n.classList.contains('streaming'))
+  check('T34 有流式气泡', Boolean(node), JSON.stringify(document.getElementById('transcript').children.map((n) => n.className)))
+  check('T34 占位文字是「运行中…」', Boolean(node) && node.textContent.includes('运行中…'), node && node.textContent)
+  check('T34 没有旧的裸省略号占位', Boolean(node) && !/^\s*…\s*$/.test(node.textContent.replace('DSH', '').replace('✦ 思考', '')), node && node.textContent)
+  check('T34 气泡标上 waiting（CSS 据此藏掉头像/思考摘要）', Boolean(node) && node.classList.contains('waiting'), node && node.className)
+  const css = readFileSync(join(dirname(sourcePath), 'style.css'), 'utf8')
+  check('T34 waiting 时藏掉 role 与思考摘要', css.includes('.msg.assistant.streaming.waiting .delta-think'), 'style.css 缺 waiting 规则')
+
+  app.applyDelta({ sessionId: 'sess-A', text: '正文来了', streaming: true })
+  const node2 = document.getElementById('transcript').children.find((n) => n.classList && n.classList.contains('streaming'))
+  check('T34 正文到了就恢复正常气泡', Boolean(node2) && !node2.classList.contains('waiting'), node2 && node2.className)
+  check('T34 正文到了不再显示运行中', Boolean(node2) && !node2.textContent.includes('运行中…'), node2 && node2.textContent)
+  app.clearDelta()
+}
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
 if (expectBug) {
   console.log('（--expect-bug 模式：以上失败项即为已复现的 bug）')
