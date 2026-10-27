@@ -171,8 +171,12 @@ const adminRes = await fetch(`${BASE}/admin`)
 const adminText = await adminRes.text()
 check('GET /admin 返回配对页', adminRes.status === 200 && adminText.includes('配对二维码'))
 
+// 「扫到 IP:端口 就能看到配对页」这个洞已经堵上：没有码、没有设备 cookie 一律 404。
 const indexRes = await fetch(`${BASE}/`)
-check('GET / 返回 PWA 外壳', indexRes.status === 200)
+check('GET / 没码没 cookie 返回 404', indexRes.status === 404)
+
+const shellWithCode = await fetch(`${BASE}/?t=smoke-probe-code`)
+check('GET / 带 ?t= 才回外壳', shellWithCode.status === 200)
 
 const appRes = await fetch(`${BASE}/app.js`)
 check('GET /app.js', appRes.status === 200)

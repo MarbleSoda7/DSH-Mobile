@@ -8,8 +8,9 @@
  * v16：本地文件引用渲染成"文件名+后缀"芯片（点击复制路径），不再铺开绝对路径。
  * v17：过程行挪到「已完成」标题下方——一级展开往下长，标题原地不动。
  * v18：行内代码里的纯路径保持原样（只把"链接形式"的文件引用渲染成芯片）。
- * v19：排队/插话支持发图片（纯图片消息不再被丢、排队行显示张数、长按发送键插话）。 */
-const SHELL = 'dsh-mobile-shell-v22'
+ * v19：排队/插话支持发图片（纯图片消息不再被丢、排队行显示张数、长按发送键插话）。
+ * v23：无码 404 + 单设备换绑（旧手机收到 kicked 回配对页）+ 配对码 2 分钟过期。 */
+const SHELL = 'dsh-mobile-shell-v23'
 const FILES = ['/', '/index.html', '/app.js', '/style.css', '/icon.svg', '/manifest.webmanifest']
 // 入口资源必须"先要网络"：装成 PWA 后只靠缓存回退，永远看不到修复后的代码。
 const NETWORK_FIRST = new Set(['/', '/index.html', '/app.js', '/style.css'])

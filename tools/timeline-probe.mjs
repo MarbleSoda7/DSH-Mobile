@@ -356,7 +356,7 @@ globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0)
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode, keyboardInset, applyKeyboardInset }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode, keyboardInset, applyKeyboardInset, rememberDeviceCookie, logout }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
@@ -1240,6 +1240,23 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T34 正文到了就恢复正常气泡', Boolean(node2) && !node2.classList.contains('waiting'), node2 && node2.className)
   check('T34 正文到了不再显示运行中', Boolean(node2) && !node2.textContent.includes('运行中…'), node2 && node2.textContent)
   app.clearDelta()
+}
+
+/* T35 被换绑：服务端推 kicked 帧后，这台手机必须当场退回配对页并说明原因。
+   之前的实现什么都不做，界面一直"重连中"，用户以为插件坏了。 */
+{
+  document.cookie = ''
+  app.rememberDeviceCookie('dev123.abc')
+  check('T35 记住设备 cookie', String(document.cookie).includes('mr_dev=dev123.abc'), String(document.cookie))
+
+  localStorage.setItem('mr.token', 'dev123.abc')
+  app.state.token = 'dev123.abc'
+  app.handleFrame('kicked', { reason: 'replaced' })
+  check('T35 kicked 后立刻清掉 token', app.state.token === '', app.state.token)
+  check('T35 kicked 后清掉本地存储', localStorage.getItem('mr.token') === null, String(localStorage.getItem('mr.token')))
+  check('T35 kicked 后回到配对页', document.getElementById('pair').classList.contains('active') || !document.getElementById('pair').classList.contains('hidden'), document.getElementById('pair').className)
+  const kickedText = document.getElementById('pair-error').textContent || ''
+  check('T35 配对页说明被替换的原因', kickedText.includes('新的配对'), kickedText)
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')

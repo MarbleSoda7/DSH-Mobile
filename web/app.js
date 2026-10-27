@@ -597,7 +597,7 @@ async function api(path, options = {}) {
   })
   const data = await res.json().catch(() => ({}))
   if (res.status === 401) {
-    logout()
+    logout('绑定已失效，请重新扫码')
     throw new Error('绑定已失效，请重新扫码')
   }
   if (!res.ok || data.ok === false) {
@@ -608,12 +608,33 @@ async function api(path, options = {}) {
   return data
 }
 
-function logout() {
+/* 服务端给外壳（/ 的 index.html）加了一道闸门：没有配对码、也没有设备 cookie 就返回 404，
+ * 免得任何人扫到这个 IP:端口 都能看到"这里有台 DSH 的配对页"。
+ * 所以拿到 token 之后要把它同步成一个 cookie；JS 这边重装/清缓存后只要 localStorage 还在，
+ * 下一次成功加载就会把 cookie 补回去。 */
+function rememberDeviceCookie(token) {
+  if (!token) return
+  try {
+    document.cookie = `mr_dev=${encodeURIComponent(token)}; path=/; max-age=31536000; samesite=lax`
+  } catch {}
+}
+
+function logout(reason) {
   localStorage.removeItem(KEY_TOKEN)
   localStorage.removeItem(KEY_NAME)
   state.token = ''
   closeTransport()
   showView('pair')
+  const node = $('pair-error')
+  if (node) {
+    if (reason) {
+      node.textContent = reason
+      node.classList.remove('hidden')
+    } else {
+      node.textContent = ''
+      node.classList.add('hidden')
+    }
+  }
 }
 
 /* --------------------------------------------------------------- pairing */
@@ -638,6 +659,7 @@ async function pair(code) {
   state.deviceName = data.name || ''
   localStorage.setItem(KEY_TOKEN, data.token)
   localStorage.setItem(KEY_NAME, state.deviceName)
+  rememberDeviceCookie(data.token)
   return data
 }
 
@@ -1965,7 +1987,7 @@ function startSse() {
     state.retry = 0
     setConn('on', '已连接')
   })
-  for (const type of ['event', 'status', 'delta', 'question', 'question-resolved', 'question-expired', 'approval', 'queue']) {
+  for (const type of ['event', 'status', 'delta', 'question', 'question-resolved', 'question-expired', 'approval', 'queue', 'kicked']) {
     es.addEventListener(type, (message) => {
       let payload
       try { payload = JSON.parse(message.data) } catch { return }
@@ -2075,6 +2097,12 @@ function applyModelSelection(sessionId, data) {
 
 function handleFrame(type, payload) {
   state.lastFrameAt = Date.now()
+  // 被换绑：服务端换了新设备绑定时会立刻推这一帧，然后把连接关掉。
+  // 必须主动清 token 回配对页，否则界面会一直显示"重连中"，像卡死一样。
+  if (type === 'kicked') {
+    logout('这台手机已被新的配对替换，请重新扫码')
+    return
+  }
   if (type === 'hello') {
     state.retry = 0
     setConn('on', state.transport === 'poll' ? '省流模式' : '已连接')
@@ -2915,6 +2943,7 @@ async function boot() {
 
   state.token = localStorage.getItem(KEY_TOKEN) || ''
   state.deviceName = localStorage.getItem(KEY_NAME) || ''
+  rememberDeviceCookie(state.token)
   // 折叠状态跟着设备走：用户折叠过的项目组，下次打开还是折叠的。
   try {
     const saved = JSON.parse(localStorage.getItem('mr.collapsedGroups') || '[]')
@@ -2928,7 +2957,8 @@ async function boot() {
     $('pair-code').value = tokenParam
     history.replaceState({}, '', location.pathname)
     try {
-      await pair(tokenParam)
+      const info = await pair(tokenParam)
+      if (info && info.replaced > 0) toast('已绑定，旧设备已解绑')
       await afterPair()
       return
     } catch (error) {
@@ -2960,7 +2990,8 @@ $('pair-submit').onclick = async () => {
   $('pair-error').classList.add('hidden')
   try {
     if ($('pair-name').value.trim()) localStorage.setItem(KEY_NAME, $('pair-name').value.trim())
-    await pair(code)
+    const info = await pair(code)
+    if (info && info.replaced > 0) toast('已绑定，旧设备已解绑')
     await afterPair()
   } catch (error) {
     $('pair-error').textContent = error.message

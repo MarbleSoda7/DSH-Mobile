@@ -39,8 +39,9 @@
   </div>
 
   <h2 style="font-size:16px;margin:28px 0 8px">已绑定设备</h2>
+  <p class="muted" style="margin:0 0 8px">只保留最近绑定的 1 台（新手机绑定时旧手机自动解绑并断开）。想允许多台，把配置里的 maxDevices 调大。</p>
   <table>
-    <thead><tr><th>名称</th><th>绑定时间</th><th>最近使用</th><th></th></tr></thead>
+    <thead><tr><th>名称 / 设备</th><th>绑定时间</th><th>最近使用</th><th></th></tr></thead>
     <tbody id="devices"></tbody>
   </table>
   <p class="muted" id="usage"></p>
@@ -67,16 +68,35 @@ async function loadDevices() {
   const body = $('devices')
   body.innerHTML = ''
   const active = (data.devices || []).filter((d) => !d.revoked)
-  if (active.length === 0) {
+  const revoked = (data.devices || []).filter((d) => d.revoked).slice(-5).reverse()
+  if (active.length === 0 && revoked.length === 0) {
     const tr = document.createElement('tr')
     tr.innerHTML = '<td colspan="4" class="muted">还没有手机绑定。用手机扫上面的二维码即可。</td>'
     body.appendChild(tr)
   }
+  const esc = (text) => String(text == null ? '' : text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+  // UA 里最有用的是机型段：iOS 只给"iPhone"，Android 会带具体型号。
+  const uaHint = (ua) => {
+    const text = String(ua || '')
+    if (!text) return ''
+    const android = text.match(/Android[^;)]*;\s*([^;)]+?)(?:\s+Build|\))/i)
+    if (android) return android[1].trim()
+    if (/iPhone/.test(text)) return 'iPhone'
+    if (/iPad/.test(text)) return 'iPad'
+    return text.slice(0, 18)
+  }
   for (const device of active) {
     const tr = document.createElement('tr')
-    tr.innerHTML = `<td>${device.name}</td>
+    const hint = uaHint(device.ua)
+    tr.innerHTML = `<td>${esc(device.name)}<br><span class="muted" style="font-size:11px">${esc(hint || '—')} · ${esc(device.id)}</span></td>
       <td>${fmt(device.createdAt)}</td><td>${fmt(device.lastSeenAt)}</td>
-      <td><button class="ghost-btn" data-id="${device.id}">撤销</button></td>`
+      <td><button class="ghost-btn" data-id="${esc(device.id)}">撤销</button></td>`
+    body.appendChild(tr)
+  }
+  for (const device of revoked) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `<td class="muted">${esc(device.name)}<br><span style="font-size:11px">已解绑 · ${esc(device.id)}</span></td>
+      <td class="muted">${fmt(device.createdAt)}</td><td class="muted">${device.revokedAt ? fmt(device.revokedAt) : '—'}</td><td></td>`
     body.appendChild(tr)
   }
   for (const btn of body.querySelectorAll('button[data-id]')) {
