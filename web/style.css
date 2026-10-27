@@ -541,6 +541,9 @@ body { padding: 0; }
 /* 过程行（思考/工具调用/运行结果）：电脑版同款——淡灰小字、单行、可点开。
    注意：容器类名是 .ev-wrap，行元素类名是 .ev-row（曾经错写 .ev，导致整段样式失效）。 */
 .ev-wrap { display: flex; flex-direction: column; align-self: stretch; margin: 2px 0; }
+/* 一级收起：这一轮的过程行整个藏进「已完成，用时 x」。
+   点「已完成」只做一级展开——露出这些缩略行；再点某一行才是二级展开（完整内容）。 */
+.ev-wrap.ev-stowed { display: none; }
 /* run_code 里的嵌套子调用（读取/搜索/查看子智能体）：与电脑端一致地缩进一层，
    并在左侧留一条极淡的竖线，表示它们从属于上面那条"运行代码"。 */
 .ev-wrap.ev-sub { margin-left: 14px; padding-left: 9px; border-left: 1px solid rgba(255,255,255,0.09); }

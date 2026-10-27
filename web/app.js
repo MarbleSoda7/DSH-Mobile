@@ -945,12 +945,16 @@ function appendTurnSummary(endAt, before = null) {
   const parent = before ? (before.parentNode || before.parent || null) : null
   if (before && parent === host) host.insertBefore(row, before)
   else host.appendChild(row)
+  // 汇总行一落地就把这一轮的过程行藏起来（一级收起）：
+  // 屏幕上只剩「已完成，用时 x」和正式回答，过程信息点一下才露缩略、再点才露全文。
+  stowTurnProcess(row)
   state.turnSummaryDone.set(state.current, true)
   return row
 }
 
-// 点"已完成，用时 x"：把它上面这一轮的过程行整批展开/收起。
-function toggleTurnProcess(summaryRow) {
+// 这一轮里挂在「已完成」上面的过程行：从 summaryRow 往上数，遇到上一个 turn-mark 停。
+// 只收 .ev-wrap（思考 / 运行命令 / 读取 / 编辑 …），正文气泡和分隔线不动。
+function turnProcessNodes(summaryRow) {
   const box = $('transcript')
   const children = Array.from(box.children || [])
   let index = children.indexOf(summaryRow) - 1
@@ -958,18 +962,41 @@ function toggleTurnProcess(summaryRow) {
   while (index >= 0) {
     const node = children[index]
     if (node.classList && node.classList.contains('turn-mark')) break
-    targets.push(node)
+    if (node.classList && node.classList.contains('ev-wrap')) targets.push(node)
     index -= 1
   }
-  const opens = targets.filter((node) => node.classList && node.classList.contains('ev-wrap') && node.classList.contains('open')).length
-  const shouldOpen = opens === 0
-  for (const node of targets) {
-    if (!node.classList || !node.classList.contains('ev-wrap')) continue
-    node.classList.toggle('open', shouldOpen)
+  return targets
+}
+
+// 一级收起（默认态）：把这一轮的过程行整批藏进「已完成，用时 x」这一行里。
+// 注意这里不用 .open —— .open 是二级状态（展开某一条的完整内容）。
+// 一级只做"从屏幕上撤掉"，屏幕上只剩一行「已完成」+ 正式回答。
+function stowTurnProcess(summaryRow) {
+  for (const node of turnProcessNodes(summaryRow)) {
+    node.classList.add('ev-stowed')
+    node.classList.remove('open')
     const row = node.children && node.children[0]
-    if (row && row.setAttribute) row.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false')
+    if (row && row.setAttribute) row.setAttribute('aria-expanded', 'false')
   }
-  summaryRow.classList.toggle('open', shouldOpen)
+  summaryRow.classList.remove('open')
+}
+
+// 点「已完成，用时 x」：一级展开 / 收起。
+//   展开 → 露出这一轮的过程行缩略（「✦ 思考 · 前 60 字…」「› 运行命令 · 描述 · 143 字」）；
+//   收起 → 再整批藏回去。
+// 二级展开是点其中某一行（.ev-wrap 的 row.onclick），才显示完整思考 / 命令内容。
+function toggleTurnProcess(summaryRow) {
+  const targets = turnProcessNodes(summaryRow)
+  const stowed = targets.some((node) => node.classList.contains('ev-stowed'))
+  for (const node of targets) {
+    node.classList.toggle('ev-stowed', !stowed)
+    // 一级切换时把二级状态也归零：展开后先看到的是缩略行，
+    // 而不是上一次留下的某条完整内容。
+    node.classList.remove('open')
+    const row = node.children && node.children[0]
+    if (row && row.setAttribute) row.setAttribute('aria-expanded', stowed ? 'true' : 'false')
+  }
+  summaryRow.classList.toggle('open', stowed)
 }
 
 function toolCallRow(data) {

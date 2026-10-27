@@ -440,6 +440,45 @@ const answerIndex = orderClasses.findIndex((name) => name.includes('msg') && nam
 check('T6d 汇总行在正式回答之前', summaryIndex >= 0 && answerIndex > summaryIndex, JSON.stringify(orderClasses))
 check('T6d 汇总行在过程行之后', summaryIndex > orderClasses.findIndex((name) => name.includes('ev-wrap')), JSON.stringify(orderClasses))
 
+// T25 两级折叠（用户 m08390 的要求）：
+//   ① 一轮结束，过程行必须整批藏进「已完成，用时 x」（不是只关掉详情，是根本不显示）；
+//   ② 点「已完成」只做一级展开——露出缩略行，但每条的完整内容仍是收起的；
+//   ③ 再点某一行（如"思考"）才是二级展开，显示全文；再点「已完成」整批藏回。
+reset()
+app.handleFrame('event', { type: 'turn/start', seq: 30, time: 3000, sessionId: 'sess-A', data: {} })
+app.handleFrame('event', {
+  type: 'assistant/message', seq: 31, time: 3100, sessionId: 'sess-A',
+  data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: '思考全文：先看目录结构再说' }] } },
+})
+app.handleFrame('event', {
+  type: 'tool/call', seq: 32, time: 3200, sessionId: 'sess-A',
+  data: { name: 'pwsh', arguments: '{"command":"dir"}', summary: { kind: 'cmd', verb: '运行命令', target: 'dir' } },
+})
+app.handleFrame('event', asstEv(33, '这是最终回答'))
+app.handleFrame('event', { type: 'turn/end', seq: 34, time: 9000, sessionId: 'sess-A', data: { reason: { kind: 'completed' } } })
+const foldBox = document.getElementById('transcript')
+const foldWraps = foldBox.children.filter((node) => node.classList && node.classList.contains('ev-wrap'))
+const foldSummary = foldBox.children.find((node) => node.className && node.className.includes('turn-summary'))
+const stowedAfterEnd = foldWraps.length > 0 && foldWraps.every((node) => node.classList.contains('ev-stowed'))
+check('T25 一轮结束过程行整批收进「已完成」', stowedAfterEnd, foldWraps.map((n) => n.className).join(' | '))
+check('T25 回答气泡不被一起收掉', foldBox.children.some((node) => node.classList && node.classList.contains('msg') && node.textContent.includes('这是最终回答')))
+
+if (foldSummary && typeof foldSummary.onclick === 'function') foldSummary.onclick()
+const shownAgain = foldWraps.every((node) => !node.classList.contains('ev-stowed'))
+const stillClosed = foldWraps.every((node) => !node.classList.contains('open'))
+check('T25 点「已完成」一级展开只露缩略行（全文仍收起）', shownAgain && stillClosed,
+  'shown=' + shownAgain + ' closed=' + stillClosed)
+
+const foldThinkWrap = foldWraps.find((node) => node.classList.contains('ev-think-wrap'))
+const foldThinkRow = foldThinkWrap && foldThinkWrap.children[0]
+if (foldThinkRow && typeof foldThinkRow.onclick === 'function') foldThinkRow.onclick()
+const thinkOpened = Boolean(foldThinkWrap) && foldThinkWrap.classList.contains('open')
+check('T25 点某一行（思考）才是二级展开全文', thinkOpened, foldThinkWrap ? foldThinkWrap.className : 'no-think-wrap')
+
+if (foldSummary && typeof foldSummary.onclick === 'function') foldSummary.onclick()
+const reStowed = foldWraps.every((node) => node.classList.contains('ev-stowed') && !node.classList.contains('open'))
+check('T25 再点「已完成」整批藏回且二级状态归零', reStowed, foldWraps.map((n) => n.className).join(' | '))
+
 // T6b 过程行必须带 .ev-row（灰色 12.5px 单行）：曾经写成 .ev，样式表里没有对应规则，
 // 结果"编辑/读取/已完成"退化成白色 15px 正文、也不在同一行。这条断言防止再退化。
 reset()
