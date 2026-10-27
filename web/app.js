@@ -1149,7 +1149,11 @@ function expandable(row, body, className = '') {
     pre.className = 'ev-detail'
     pre.textContent = body
     wrap.appendChild(pre)
-    row.onclick = () => wrap.classList.toggle('open')
+    row.onclick = () => {
+      wrap.classList.toggle('open')
+      // 用户亲手点开的行要记住（userOpen），否则下一步的事件一来就把这行收回去。
+      wrap.dataset.userOpen = wrap.classList.contains('open') ? '1' : ''
+    }
   }
   return wrap
 }
@@ -1157,10 +1161,14 @@ function expandable(row, body, className = '') {
 // 正文落地后，把这一轮里还展开着的过程行（思考/工具）全部收起：
 // 电脑版就是这个行为，长回答时不会让一堆细节把正文挤走。
 // 除了 .ev-wrap，还要处理 <details>（流式思考块），否则"输出完成后收起所有思考"做不到。
+//
+// 但**用户亲手点开的行不能动**（用户 m01458）：手机上正读着某条思考，
+// 下一步一来就自动收回去，等于"点了也白点"。所以带 data-user-open 的一律跳过。
 function collapseProcessRows() {
   const box = $('transcript')
   for (const node of box.children) {
     if (!node.classList) continue
+    if (node.dataset && node.dataset.userOpen === '1') continue
     if (node.classList.contains('ev-wrap') && node.classList.contains('open')) {
       node.classList.remove('open')
     }
@@ -1249,6 +1257,8 @@ function stowTurnProcess(summaryRow) {
   // 现在统一挪到汇总行之后：展开就往标题下方长，标题原地不动，点一下就能收起。
   let anchor = summaryRow
   for (const node of targets) {
+    // 用户亲手展开的那一条不进折叠区：他正读着，收进「已完成」里等于把它抽走。
+    if (node.dataset && node.dataset.userOpen === '1') continue
     if (node.previousSibling === anchor) {
       anchor = node
       continue
@@ -1257,6 +1267,7 @@ function stowTurnProcess(summaryRow) {
     anchor = node
   }
   for (const node of targets) {
+    if (node.dataset && node.dataset.userOpen === '1') continue
     node.classList.add('ev-stowed')
     node.classList.remove('open')
     const row = node.children && node.children[0]
@@ -1275,8 +1286,9 @@ function toggleTurnProcess(summaryRow) {
   for (const node of targets) {
     node.classList.toggle('ev-stowed', !stowed)
     // 一级切换时把二级状态也归零：展开后先看到的是缩略行，
-    // 而不是上一次留下的某条完整内容。
+    // 而不是上一次留下的某条完整内容。手工点开的标记也随之作废。
     node.classList.remove('open')
+    if (node.dataset) node.dataset.userOpen = ''
     const row = node.children && node.children[0]
     if (row && row.setAttribute) row.setAttribute('aria-expanded', stowed ? 'true' : 'false')
   }
@@ -2529,6 +2541,14 @@ function renderQueue() {
   // 当前显示的是第几条：切换时做一个淡入淡出，别硬切（用户要求"不要跳变"）。
   const prevIndex = state.queueShownAt.get(state.current)
   state.queueShownAt.set(state.current, clampQueueIndex(items))
+  // 正在编辑一条排队消息时，**绝不能**把那个输入框重建掉（用户 m01458）：
+  // 每次队列帧到达都 innerHTML='' 重画，等于把焦点、光标位置和已输入的内容一起清空，
+  // 手机上表现为"正打字，一有新思考就跳走"。
+  // 做法是把正在编辑的那个节点整块留下来，其余重画。
+  const editingId = state.editingQueue || ''
+  const editingNode = editingId
+    ? Array.from(box.children || []).find((node) => node.classList && node.classList.contains('queue-item') && node.classList.contains('editing')) || null
+    : null
   box.innerHTML = ''
   box.classList.toggle('hidden', items.length === 0)
   // 多条排队消息时，一次只展开一条，上下滑动切换（用户要的"上下切换消息"）。
@@ -2543,7 +2563,7 @@ function renderQueue() {
   }
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i]
-    const row = rowForItem(item)
+    const row = item.itemId === editingId && editingNode ? editingNode : rowForItem(item)
     if (items.length > 1) row.style.display = i === index ? '' : 'none'
     if (items.length > 1 && i === index && swapped) row.classList.add('queue-row-in')
     box.appendChild(row)

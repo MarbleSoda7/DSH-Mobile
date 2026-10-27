@@ -467,8 +467,10 @@ const collapsedAgain = Boolean(firstWrap) && !firstWrap.classList.contains('open
 check('T6 点击可展开、再点收回', expanded && collapsedAgain, 'expanded=' + expanded + ' collapsed=' + collapsedAgain)
 if (row && typeof row.onclick === 'function') row.onclick()
 app.handleFrame('event', asstEv(2, '正文到了'))
-const allClosed = box.children.filter((node) => node.classList && node.classList.contains('ev-wrap')).every((node) => !node.classList.contains('open'))
-check('T6 正文出现后过程行自动收起', allClosed)
+// 契约变更（用户 m01458）：用户亲手点开的行，后续事件不许把它收回去。
+// 「自动收起」只对没被点开过的行生效（对照用例见 T36）。
+const keptByUser = Boolean(firstWrap) && firstWrap.classList.contains('open')
+check('T6 用户点开的过程行不被新正文收回', keptByUser, firstWrap ? firstWrap.className : 'no-node')
 app.handleFrame('event', { type: 'turn/start', seq: 3, time: 1000, sessionId: 'sess-A', data: {} })
 app.handleFrame('event', { type: 'turn/end', seq: 4, time: 1000 + 65000, sessionId: 'sess-A', data: { reason: { kind: 'completed' } } })
 // 汇总行现在插在正式回答之前（电脑版顺序），所以不能再取"最后一个节点"。
@@ -1257,6 +1259,59 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T35 kicked 后回到配对页', document.getElementById('pair').classList.contains('active') || !document.getElementById('pair').classList.contains('hidden'), document.getElementById('pair').className)
   const kickedText = document.getElementById('pair-error').textContent || ''
   check('T35 配对页说明被替换的原因', kickedText.includes('新的配对'), kickedText)
+}
+
+/* T36 一轮还在跑的时候，后续事件不许打断用户正在做的事（用户 m01458）：
+   ① 亲手点开的过程行不能被新事件收回去；
+   ② 正在编辑的排队消息不能被队列快照重画掉（焦点/光标/已输入内容都还在）。 */
+{
+  // ① 展开一条过程行，然后来一条只带思考的 assistant/message
+  app.state.current = 'sess-A'
+  document.getElementById('transcript').children = []
+  app.handleFrame('event', { type: 'turn/start', seq: 500, time: 5000, sessionId: 'sess-A', data: {} })
+  app.handleFrame('event', {
+    type: 'tool/call', seq: 501, time: 5100, sessionId: 'sess-A',
+    data: { name: 'pwsh', arguments: '{"command":"dir"}', summary: { kind: 'cmd', verb: '运行命令', target: 'dir' } },
+  })
+  const liveWrap = document.getElementById('transcript').children.find((node) => node.classList && node.classList.contains('ev-wrap'))
+  check('T36 拿到一条过程行', Boolean(liveWrap), JSON.stringify(document.getElementById('transcript').children.map((n) => n.className)))
+  liveWrap.children[0].onclick()
+  check('T36 点开后是展开态', liveWrap.classList.contains('open'), liveWrap.className)
+  check('T36 点开被记为"用户自己打开"', liveWrap.dataset.userOpen === '1', String(liveWrap.dataset.userOpen))
+
+  app.handleFrame('event', {
+    type: 'assistant/message', seq: 502, time: 5200, sessionId: 'sess-A',
+    data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: '新跳出来的思考' }] } },
+  })
+  check('T36 新思考到达后，用户点开的行仍然展开', liveWrap.classList.contains('open'), liveWrap.className)
+  check('T36 新思考到达后没有被收进折叠区', !liveWrap.classList.contains('ev-stowed'), liveWrap.className)
+
+  // 对照组：没被用户点开过的行，正文落地时照旧自动收起（电脑版行为不变）
+  app.handleFrame('event', {
+    type: 'tool/call', seq: 503, time: 5300, sessionId: 'sess-A',
+    data: { name: 'read', arguments: '{"file_path":"a.js"}', summary: { kind: 'read', verb: '读取', target: 'a.js' } },
+  })
+  const autoWrap = document.getElementById('transcript').children.find((node) => node.classList && node.classList.contains('ev-wrap') && node !== liveWrap)
+  if (autoWrap) autoWrap.classList.add('open')
+  app.handleFrame('event', asstEv(504, '正文来了'))
+  check('T36 自动展开的行正文落地后收起', Boolean(autoWrap) && !autoWrap.classList.contains('open'), autoWrap && autoWrap.className)
+
+  // ② 正在编辑的排队消息：队列快照重发后，同一个输入框节点、同一份内容都还在
+  app.handleFrame('queue', { sessionId: 'sess-A', items: [{ itemId: 'edit-keep-1', text: '待插话的话', at: Date.now() }] })
+  app.state.editingQueue = 'edit-keep-1'
+  app.renderQueue()
+  const qbox = document.getElementById('queue')
+  const editRow = qbox.children.find((node) => node.classList && node.classList.contains('editing'))
+  check('T36 进入编辑态后有输入框', Boolean(editRow), JSON.stringify(qbox.children.map((n) => n.className)))
+  const editArea = editRow && editRow.children[0]
+  if (editArea) editArea.value = '我改了半截的话'
+
+  app.handleFrame('queue', { sessionId: 'sess-A', items: [{ itemId: 'edit-keep-1', text: '待插话的话', at: Date.now() }] })
+  const editRow2 = qbox.children.find((node) => node.classList && node.classList.contains('editing'))
+  check('T36 队列快照重发后仍是同一个输入框节点', editRow2 === editRow, editRow2 === editRow ? 'same' : 'rebuilt')
+  check('T36 已输入的内容没被清掉', Boolean(editRow2) && editRow2.children[0].value === '我改了半截的话', editRow2 && editRow2.children[0].value)
+  app.state.editingQueue = ''
+  app.renderQueue()
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
