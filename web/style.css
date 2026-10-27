@@ -46,6 +46,10 @@ body { padding: 0; }
      表现就是"上滑不加载更早记录、还会触发浏览器下拉刷新"。 */
   min-height: 0;
   padding-top: var(--safe-t);
+  /* 软键盘：Android Chrome（interactive-widget=resizes-content）会自己缩布局视口，
+     这时 --kb-h 是 0；不支持的浏览器由 JS 用 visualViewport 算差值垫在这里，
+     否则最后一条消息会被输入法盖住。 */
+  padding-bottom: var(--kb-h, 0px);
 }
 
 /* ---------------------------------------------------------------- pair */
@@ -211,6 +215,12 @@ body { padding: 0; }
   scroll-snap-type: none;
 }
 
+/* 隐藏滚动条。手机浏览器（夸克等 Chromium 内核）会画一条带上下箭头的灰色滚动条，
+   正好压在右上角的「停止」按钮上（用户反馈"遮住按钮了"）。
+   滚动本身完全不受影响：手指拖动、程序 scrollTop 都照常。 */
+#app, #app * { scrollbar-width: none; -ms-overflow-style: none; }
+#app *::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
 .msg { max-width: 88%; border-radius: var(--radius); padding: 9px 12px; font-size: 15px; white-space: pre-wrap; word-break: break-word; }
 .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 5px; }
 .msg.assistant { align-self: flex-start; background: var(--bg-soft); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
@@ -347,6 +357,12 @@ body { padding: 0; }
 }
 .sheet-content { overflow-y: auto; padding: 4px 14px 14px; }
 .sheet-foot { padding: 10px 14px calc(14px + var(--safe-b)); border-top: 1px solid var(--line); }
+/* 确认弹层（askConfirm）：盖在其它 sheet 之上，按钮左右分列。 */
+.sheet.confirm { z-index: 40; }
+.sheet.confirm .confirm-body { max-height: 60vh; }
+.confirm-text { font-size: 14px; line-height: 1.55; color: #e7ecf5; }
+.confirm-foot { display: flex; gap: 10px; }
+.confirm-foot > button { flex: 1; }
 
 .model-group { margin-bottom: 14px; }
 .model-group h3 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 8px 0 6px; }
@@ -568,8 +584,14 @@ body { padding: 0; }
 /* ---- queue placeholder / long text guard ---- */
 .queue-item.pending { opacity: .75; }
 .queue-pending { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
-/* 排队行/插话气泡里的图片标记：本地只有张数，没有图片本身。 */
-.queue-images { font-size: 11px; color: var(--accent); flex: 0 0 auto; }
+/* 排队行/插话气泡里的图片标记：本地只有张数，没有图片本身。
+   做成带底的徽标，别只靠一个 emoji——用户反馈"看不出这条带图"。 */
+.queue-images {
+  font-size: 11px; line-height: 1;
+  color: #fff; background: var(--accent);
+  border-radius: 9px; padding: 3px 7px;
+  flex: 0 0 auto; white-space: nowrap;
+}
 .msg-figure-pending {
   display: flex; align-items: center; justify-content: center;
   min-height: 54px; min-width: 96px; padding: 0 12px;

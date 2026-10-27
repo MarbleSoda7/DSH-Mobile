@@ -63,6 +63,10 @@ const state = {
   // 用户是否"贴在底部"：只有为真时，新内容/图片加载完成才允许自动滚到底。
   // 用户在翻历史时必须保持原位，否则会被不断拽回去（真机反馈过"抢滚动"）。
   pinBottom: true,
+  // 键盘把视口压小之后，是否还要继续贴底（只在"点输入框之前就在底部"时为真）。
+  keyboardPinned: false,
+  // 点输入框那一刻的贴底状态（pointerdown 记下，focus 时取用）。
+  bottomBeforeComposer: null,
   question: null,
   catalog: null,
   lastScrollTop: 0,
@@ -492,6 +496,52 @@ function toast(text, ms = 2600) {
   toast.timer = setTimeout(() => node.classList.add('hidden'), ms)
 }
 
+/* 确认弹层：`await askConfirm('…', '继续')` → true / false。
+ * 不用原生 confirm()：手机上它是浏览器弹窗，样式和 App 完全两张皮，
+ * 而且部分内嵌浏览器会把它压到地址栏下面。 */
+function askConfirm(message, okLabel = '确定', cancelLabel = '取消') {
+  return new Promise((resolve) => {
+    const root = document.createElement('div')
+    root.className = 'sheet confirm'
+    const mask = document.createElement('div')
+    mask.className = 'sheet-mask'
+    const body = document.createElement('div')
+    body.className = 'sheet-body confirm-body'
+    const head = document.createElement('div')
+    head.className = 'sheet-head'
+    head.textContent = '提示'
+    const content = document.createElement('div')
+    content.className = 'sheet-content confirm-text'
+    content.textContent = message
+    const foot = document.createElement('div')
+    foot.className = 'sheet-foot confirm-foot'
+    const cancel = document.createElement('button')
+    cancel.className = 'ghost-btn'
+    cancel.type = 'button'
+    cancel.textContent = cancelLabel
+    const ok = document.createElement('button')
+    ok.className = 'primary-btn'
+    ok.type = 'button'
+    ok.textContent = okLabel
+    let done = false
+    const finish = (value) => {
+      if (done) return
+      done = true
+      root.remove()
+      resolve(value)
+    }
+    cancel.onclick = () => finish(false)
+    ok.onclick = () => finish(true)
+    mask.onclick = () => finish(false)
+    foot.append(cancel, ok)
+    body.append(head, content, foot)
+    root.append(mask, body)
+    const host = $('app')
+    if (host) host.appendChild(root)
+    if (typeof ok.focus === 'function') ok.focus()
+  })
+}
+
 /* 复制到剪贴板。
  * 公网入口是 http://<IP>:7788，不是安全上下文，navigator.clipboard 直接不存在，
  * 所以必须带 execCommand('copy') 兜底，否则手机上点了文件芯片毫无反应。 */
@@ -779,6 +829,77 @@ function nearBottom() {
 // 立刻解除贴底，避免被新内容或图片加载拽回最下面。
 function syncPin() {
   state.pinBottom = nearBottom()
+}
+
+/* ---------------------------------------------------------- 软键盘 / 贴底 */
+
+/* 点输入框弹键盘时，可视区域被压小，时间线底部就藏到输入法后面了（用户反馈：
+ * "输入框被抬高，底部被遮挡"）。这里做两件事：
+ *
+ *   1) 布局补偿：支持 `interactive-widget=resizes-content` 的浏览器（Android Chrome）
+ *      会自己缩布局视口，innerHeight 跟着变小，算出来的 inset 就是 0，不重复垫高；
+ *      不支持的浏览器（iOS Safari 等）布局视口不动，就用 visualViewport 算出差值，
+ *      垫到 `.view` 的 padding-bottom 上，输入框才真的在键盘上方。
+ *   2) 重新贴底：只有"点输入框之前本来就贴在底部"时才贴。用户正在翻历史时点输入框，
+ *      绝不能把他拽回最新一条。
+ *
+ * 判断"本来就贴底"必须用 pointerdown 那一刻：键盘引起的布局变化会抖动 scroll 事件，
+ * scroll 监听会把 pinBottom 改成 false，等 focus 里再量就已经晚了。 */
+function keyboardInset() {
+  const viewport = window.visualViewport
+  if (!viewport) return 0
+  const covered = (window.innerHeight || 0) - (viewport.height || 0) - (viewport.offsetTop || 0)
+  // 小于 80px 的差值当作地址栏伸缩之类的噪音，别为它垫底。
+  return covered > 80 ? Math.round(covered) : 0
+}
+
+function setKeyboardInset(inset) {
+  const style = document.documentElement && document.documentElement.style
+  if (style && typeof style.setProperty === 'function') style.setProperty('--kb-h', `${inset}px`)
+}
+
+/** 键盘高度变了（弹出/收起/换输入法）：补偿布局，必要时重新贴底。 */
+function applyKeyboardInset() {
+  setKeyboardInset(keyboardInset())
+  if (state.keyboardPinned) scrollBottom()
+}
+
+function bindKeyboardRepin() {
+  const area = $('composer')
+  if (area) {
+    // pointerdown 早于 focus，也早于键盘带来的任何布局变化：用它记下"点之前是否贴底"。
+    area.addEventListener('pointerdown', () => {
+      state.bottomBeforeComposer = nearBottom()
+    })
+    area.addEventListener('focus', () => {
+      const wasBottom = state.bottomBeforeComposer === null
+        ? (state.pinBottom || nearBottom())
+        : state.bottomBeforeComposer
+      state.bottomBeforeComposer = null
+      state.keyboardPinned = wasBottom
+      // 键盘动画几百毫秒，有的浏览器只在中途发一次 resize，所以分几拍补贴底。
+      for (const delay of [60, 180, 360, 600]) {
+        setTimeout(() => {
+          if (state.keyboardPinned) {
+            setKeyboardInset(keyboardInset())
+            scrollBottom()
+          }
+        }, delay)
+      }
+    })
+    area.addEventListener('blur', () => {
+      state.keyboardPinned = false
+      setKeyboardInset(0)
+      // 收起键盘后布局回到原样，贴底状态要保持住。
+      if (state.pinBottom) setTimeout(() => scrollBottom(), 60)
+    })
+  }
+  const viewport = window.visualViewport
+  if (viewport && typeof viewport.addEventListener === 'function') {
+    viewport.addEventListener('resize', applyKeyboardInset)
+    viewport.addEventListener('scroll', applyKeyboardInset)
+  }
+  window.addEventListener('resize', applyKeyboardInset)
 }
 
 function renderChatHeader() {
@@ -2344,6 +2465,11 @@ function queueEditRow(item) {
   const area = document.createElement('textarea')
   area.className = 'queue-edit'
   area.value = item.text || ''
+  const imageCount = Number(item.imageCount) || 0
+  if (imageCount > 0) {
+    // 用户已经确认过才会进到这里，但输入框里得再提醒一次，免得他以为图还留着。
+    area.placeholder = `原消息带 ${imageCount} 张图片，保存后只保留文字`
+  }
   const save = queueButton('✓', '保存', async () => {
     const text = area.value.trim()
     if (!text) return
@@ -2412,7 +2538,7 @@ function rowForItem(item) {
   text.textContent = item.text || (imageCount > 0 ? `图片 ${imageCount} 张` : '（无文字内容）')
   row.appendChild(text)
   if (imageCount > 0) {
-    // 排队行必须让人看出"这条带图"，否则纯图片排队看起来像一条空消息。
+    // 排队行必须让人一眼看出"这条带图"，否则纯图片排队看起来像一条空消息。
     const tag = document.createElement('span')
     tag.className = 'queue-images'
     tag.textContent = `🖼 ${imageCount}`
@@ -2427,14 +2553,19 @@ function rowForItem(item) {
     row.appendChild(tag)
     return row
   }
-  // 带图片的排队消息不给编辑入口：宿主 updateQueue 的 edit 只收文本块，
-  // 一编辑图片就永久丢了（服务端也会拒，这里先不给按钮，省一次白跑）。
-  if (imageCount === 0) {
-    row.appendChild(queueButton('✎', '编辑', () => {
-      state.editingQueue = item.itemId
-      renderQueue()
-    }))
-  }
+  // 带图片的排队消息也能编辑，但必须先说清楚代价：宿主 updateQueue 的 edit 只收
+  // 文本块，一编辑图片就永久丢了（服务端也会拒），所以点之前让用户确认一次。
+  row.appendChild(queueButton('✎', imageCount > 0 ? '编辑（会丢失图片）' : '编辑', async () => {
+    if (imageCount > 0) {
+      const okd = await askConfirm(
+        `这条排队消息带着 ${imageCount} 张图片。编辑后只保留文字，图片会被丢掉，无法找回。要继续吗？`,
+        '继续编辑',
+      )
+      if (!okd) return
+    }
+    state.editingQueue = item.itemId
+    renderQueue()
+  }))
   row.appendChild(queueButton('🗑', '删除', () => queueAction(item, 'remove')))
   row.appendChild(queueButton('↑', '插话到本轮', () => queueAction(item, 'steer')))
   return row
@@ -2475,9 +2606,14 @@ function dropQueueRow(itemId, sessionId = state.current) {
 /* 本地先改、再发请求：网络往返哪怕只有几十毫秒，用户点了"保存"却看到旧文本
  * 也会以为没生效（用户实测："看似没修改，实际已经修改好了"）。所以三个动作都
  * 立刻改本地，失败再回滚。 */
-function setQueueText(itemId, text, sessionId = state.current) {
+function setQueueText(itemId, text, sessionId = state.current, dropImages = false) {
   const rows = state.queues.get(sessionId) || []
-  state.queues.set(sessionId, rows.map((row) => (row.itemId === itemId ? { ...row, text } : row)))
+  state.queues.set(sessionId, rows.map((row) => {
+    if (row.itemId !== itemId) return row
+    // 编辑走的是宿主 edit（只收文本块），图片在服务端已经被丢掉，
+    // 本地也要立刻把张数清零，否则排队行还挂着 🖼 图标，用户以为图还在。
+    return dropImages ? { ...row, text, imageCount: 0 } : { ...row, text }
+  }))
   if (sessionId === state.current) renderQueue()
 }
 
@@ -2487,8 +2623,8 @@ async function queueAction(item, action, text) {
   const snapshot = (state.queues.get(sessionId) || []).slice()
   // 立刻反映到界面：编辑改文本、删除/插话摘掉行；插话还要立刻出现"你"的气泡。
   if (action === 'edit' && typeof text === 'string') {
-    setQueueText(item.itemId, text)
-    touchQueue(sessionId, item.itemId, { text })
+    setQueueText(item.itemId, text, sessionId, true)
+    touchQueue(sessionId, item.itemId, { text, imageCount: 0 })
   }
   if (action === 'remove' || action === 'steer') {
     dropQueueRow(item.itemId)
@@ -2842,6 +2978,7 @@ $('btn-model').onclick = openModelSheet
 $('btn-send').onclick = () => send('auto') // 先绑一次，bindSendButton 会覆盖它
 bindSendButton()
 bindAttach()
+bindKeyboardRepin()
 $('q-submit').onclick = submitQuestion
 $('q-dismiss').onclick = closeQuestion
 

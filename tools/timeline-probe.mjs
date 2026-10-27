@@ -43,7 +43,15 @@ class El {
     this.children = []
     this.parent = null
     this.classList = new ClassList(this)
-    this.style = {}
+    this.style = {
+      props: new Map(),
+      setProperty(name, value) {
+        this.props.set(String(name), String(value))
+      },
+      getPropertyValue(name) {
+        return this.props.get(String(name)) || ''
+      },
+    }
     this.dataset = {}
     this._html = ''
     this._text = ''
@@ -112,6 +120,9 @@ class El {
     child.parent = this
     this.children.push(child)
     return child
+  }
+  append(...nodes) {
+    for (const node of nodes) this.appendChild(node)
   }
   insertBefore(child, ref) {
     // 真实 DOM 的 insertBefore 是"移动"：先把节点从原父节点摘下来。
@@ -200,6 +211,8 @@ const registry = new Map()
 const document = {
   hidden: false,
   body: new El('body'),
+  // app.js 里写 CSS 变量用的是 document.documentElement.style.setProperty（软键盘 --kb-h）。
+  documentElement: new El('html'),
   createElement: (tag) => new El(tag),
   getElementById: (id) => {
     if (!registry.has(id)) {
@@ -309,7 +322,13 @@ class EventSource {
 }
 const navigator = {}
 const locationStub = { search: '', hash: '', href: 'http://127.0.0.1:7788/' }
-const windowStub = { addEventListener: () => {} }
+// 软键盘：app.js 用 window.innerHeight 与 window.visualViewport 算被输入法盖住的高度。
+// 替身给可改的高度，T31 直接改这两个值来模拟"键盘弹出"。
+const windowStub = {
+  innerHeight: 800,
+  visualViewport: { height: 800, offsetTop: 0, addEventListener: () => {} },
+  addEventListener: () => {},
+}
 // 选图用到的 FileReader：Node 没有，给个最小替身。
 // 读的是 file.__base64（用例直接给内容），readAsDataURL 异步回调 onload。
 class FileReaderStub {
@@ -330,10 +349,14 @@ class FileReaderStub {
 
 /* ------------------------------------------------------------------ 载入脚本 */
 
+// app.js 里 input 自适应高度用了 requestAnimationFrame（真实浏览器一定有）。
+// 替身环境没有，按"立刻回调"实现即可，测的是回调里做了什么，不是动画节拍。
+globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0)
+
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode, keyboardInset, applyKeyboardInset }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
@@ -1046,16 +1069,20 @@ console.log('\nT28 纯图片插话在手机上要有气泡')
   check('T28 带文字带图：文字和图块都在', Boolean(withText) && withText.textContent.includes('看图') && withText.textContent.includes('插话图片 1 张'), withText && withText.textContent)
 }
 
-console.log('\nT29 排队行要显示 🖼 张数、带图的不给编辑入口')
+console.log('\nT29 排队行要标出 🖼 张数（带图的也能编辑，但按钮要标明代价）')
 {
   const row = app.rowForItem({ itemId: 'q1', text: '', imageCount: 2, at: Date.now() })
   check('T29 纯图片排队行有文字兜底', row.textContent.includes('图片 2 张'), row.textContent)
   check('T29 排队行标出 🖼 2', row.textContent.includes('🖼 2'), row.textContent)
   const buttons = row.children.filter((node) => typeof node.onclick === 'function')
-  check('T29 带图的排队行没有编辑按钮', !row.textContent.includes('✎'), row.textContent)
+  check('T29 带图的排队行也有编辑按钮', row.textContent.includes('✎'), row.textContent)
+  const editBtn = buttons.find((node) => node.textContent === '✎')
+  check('T29 编辑按钮标明会丢图', Boolean(editBtn) && String(editBtn.title).includes('丢失图片'), editBtn && editBtn.title)
   check('T29 删除/插话按钮还在', row.textContent.includes('🗑') && row.textContent.includes('↑'), row.textContent + ' | buttons=' + buttons.length)
   const plain = app.rowForItem({ itemId: 'q2', text: '普通排队', imageCount: 0, at: Date.now() })
   check('T29 没图的排队行照旧可以编辑', plain.textContent.includes('✎'), plain.textContent)
+  const plainBtn = plain.children.find((node) => node.textContent === '✎')
+  check('T29 没图时标题不提丢图', Boolean(plainBtn) && !String(plainBtn.title).includes('丢失图片'), plainBtn && plainBtn.title)
 }
 
 console.log('\nT30 运行中发图片：排队占位行要带 imageCount')
@@ -1074,6 +1101,125 @@ console.log('\nT30 运行中发图片：排队占位行要带 imageCount')
   app.state.turnOpen.delete('sess-A')
   app.state.attachments = []
   app.state.queues = new Map()
+}
+
+console.log('\nT31 弹键盘：垫出被输入法盖住的高度，只对原本贴底的用户回底')
+{
+  reset()
+  const box = document.getElementById('transcript')
+  const area = document.getElementById('composer')
+  const fire = (node, name) => (node.listeners.get(name) || []).forEach((fn) => fn({ type: name }))
+  windowStub.innerHeight = 800
+  windowStub.visualViewport.height = 800
+  windowStub.visualViewport.offsetTop = 0
+
+  check('T31 键盘没弹出时不垫底', app.keyboardInset() === 0, String(app.keyboardInset()))
+  app.applyKeyboardInset()
+  check('T31 没键盘时 --kb-h 为 0px', document.documentElement.style.getPropertyValue('--kb-h') === '0px', document.documentElement.style.getPropertyValue('--kb-h'))
+
+  windowStub.visualViewport.height = 500
+  check('T31 键盘压掉 300px 时算出 300', app.keyboardInset() === 300, String(app.keyboardInset()))
+
+  box.scrollHeight = 3000
+  box.clientHeight = 500
+  box.scrollTop = 2400
+  app.state.keyboardPinned = true
+  app.applyKeyboardInset()
+  check('T31 --kb-h 垫上键盘高度', document.documentElement.style.getPropertyValue('--kb-h') === '300px', document.documentElement.style.getPropertyValue('--kb-h'))
+  check('T31 贴底时重新滚到最下面', box.scrollTop === 3000, String(box.scrollTop))
+
+  box.scrollTop = 200
+  app.state.keyboardPinned = false
+  app.state.pinBottom = false
+  app.applyKeyboardInset()
+  check('T31 没贴底时一动不动（不抢滚动）', box.scrollTop === 200, String(box.scrollTop))
+
+  windowStub.visualViewport.height = 760
+  check('T31 小于 80px 的差值当地址栏噪音忽略', app.keyboardInset() === 0, String(app.keyboardInset()))
+
+  windowStub.visualViewport.height = 500
+  windowStub.visualViewport.offsetTop = 100
+  check('T31 视口整体上移时扣掉 offsetTop', app.keyboardInset() === 200, String(app.keyboardInset()))
+  windowStub.visualViewport.offsetTop = 0
+  windowStub.visualViewport.height = 800
+
+  // 关键：判断"点之前是否贴底"必须用 pointerdown 那一刻的状态。
+  // 键盘引起的布局抖动会改滚动位置，focus 里再量就已经是错的了。
+  box.scrollHeight = 3000
+  box.clientHeight = 500
+  box.scrollTop = 2400
+  app.state.keyboardPinned = false
+  fire(area, 'pointerdown')
+  box.scrollTop = 0
+  fire(area, 'focus')
+  check('T31 用 pointerdown 那一刻的贴底状态决定回底', app.state.keyboardPinned === true, String(app.state.keyboardPinned))
+
+  app.state.keyboardPinned = false
+  fire(area, 'pointerdown')
+  fire(area, 'focus')
+  check('T31 翻历史时点输入框不夺回滚动', app.state.keyboardPinned === false, String(app.state.keyboardPinned))
+
+  fire(area, 'blur')
+  check('T31 收起键盘后垫底清零', document.documentElement.style.getPropertyValue('--kb-h') === '0px', document.documentElement.style.getPropertyValue('--kb-h'))
+  check('T31 收起键盘后不再自动回底', app.state.keyboardPinned === false, String(app.state.keyboardPinned))
+  app.state.keyboardPinned = false
+  app.state.bottomBeforeComposer = null
+}
+
+console.log('\nT32 壳层：隐藏滚动条 + 键盘不覆盖布局')
+{
+  const web = dirname(sourcePath)
+  const css = readFileSync(join(web, 'style.css'), 'utf8')
+  const html = readFileSync(join(web, 'index.html'), 'utf8')
+  check('T32 隐藏 webkit 滚动条（夸克那条带箭头的灰条）', css.includes('#app *::-webkit-scrollbar'), 'style.css 缺 #app *::-webkit-scrollbar')
+  check('T32 关闭标准滚动条宽度', css.includes('scrollbar-width: none'), 'style.css 缺 scrollbar-width')
+  check('T32 .view 用 --kb-h 垫底', css.includes('padding-bottom: var(--kb-h, 0px)'), 'style.css 缺 --kb-h 垫底')
+  check('T32 viewport 声明 interactive-widget', html.includes('interactive-widget=resizes-content'), 'index.html 缺 interactive-widget')
+}
+
+console.log('\nT33 点带图排队行的编辑：先弹确认，取消就不进编辑态')
+{
+  reset()
+  app.state.current = 'sess-A'
+  app.state.editingQueue = ''
+  const appEl = document.getElementById('app')
+  const row = app.rowForItem({ itemId: 'q-img', text: '', imageCount: 2, at: Date.now() })
+  const editBtn = row.children.find((node) => node.textContent === '✎')
+  const findSheet = () => appEl.children.find((node) => node.classList && node.classList.contains('confirm'))
+
+  editBtn.onclick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const sheet = findSheet()
+  check('T33 弹出了确认层', Boolean(sheet), JSON.stringify(appEl.children.map((node) => node.className)))
+  check('T33 提示里带图片张数', Boolean(sheet) && sheet.textContent.includes('2 张图片'), sheet && sheet.textContent)
+  check('T33 提示说明图片会丢', Boolean(sheet) && sheet.textContent.includes('丢掉'), sheet && sheet.textContent)
+
+  const buttons = sheet ? sheet.querySelectorAll('button') : []
+  const cancelBtn = buttons.find((node) => node.textContent === '取消')
+  check('T33 有取消按钮', Boolean(cancelBtn), buttons.map((node) => node.textContent).join('|'))
+  cancelBtn.onclick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  check('T33 取消后不进编辑态', app.state.editingQueue === '', String(app.state.editingQueue))
+  check('T33 取消后确认层收起', !findSheet())
+
+  const row2 = app.rowForItem({ itemId: 'q-img', text: '', imageCount: 2, at: Date.now() })
+  const editBtn2 = row2.children.find((node) => node.textContent === '✎')
+  editBtn2.onclick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const sheet2 = findSheet()
+  const okBtn = sheet2 ? sheet2.querySelectorAll('button').find((node) => node.textContent === '继续编辑') : null
+  check('T33 有"继续编辑"按钮', Boolean(okBtn), sheet2 ? sheet2.textContent : 'no-sheet')
+  okBtn.onclick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  check('T33 确认后才进编辑态', app.state.editingQueue === 'q-img', String(app.state.editingQueue))
+
+  // 编辑保存后本地也要把图片张数清零，否则排队行还挂着 🖼，用户以为图没丢。
+  app.state.queues.set('sess-A', [{ itemId: 'q-img', text: '', imageCount: 2, at: Date.now() }])
+  app.setQueueText('q-img', '改成一个字', 'sess-A', true)
+  const after = (app.state.queues.get('sess-A') || [])[0] || {}
+  check('T33 编辑后排队行的图片张数清零', after.imageCount === 0 && after.text === '改成一个字', JSON.stringify(after))
+
+  app.state.editingQueue = ''
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
