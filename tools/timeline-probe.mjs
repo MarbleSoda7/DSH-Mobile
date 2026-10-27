@@ -967,8 +967,16 @@ console.log('\nT26 文件引用渲染成文件名芯片')
   const styled = app.mdInline('[style.css:545](<D:\\SDU\\IC\\HarnessProject\\guide-dog-peta\\dsh-mobile-remote\\web\\style.css#L545>)')
   check('T26 第二个文件同样只留文件名', visible(styled).includes('style.css:545') && !visible(styled).includes('guide-dog-peta'), visible(styled))
 
+  // 用户 m00358：行内代码里的纯路径必须原样保留——有时候就是要输出完整路径，
+  // 不能一律改成芯片，否则用户想复制/查看真实路径反而看不到了。
   const bare = app.mdInline('看 `D:\\SDU\\IC\\HarnessProject\\guide-dog-peta\\dsh-mobile-remote\\lib\\index.js:41` 这行')
-  check('T26 行内代码里的路径也变芯片', bare.includes('class="file-chip"') && visible(bare).includes('index.js:41') && !WINDOWS_PATH.test(visible(bare)), visible(bare))
+  check('T26 行内代码里的纯路径保持原样', bare.includes('<code>D:\\SDU\\IC\\HarnessProject') && bare.includes('index.js:41</code>') && !bare.includes('file-chip'), bare)
+
+  // 双反引号代码段（`` `x` ``）里的单反引号是字面量：不能把外层 `` 当空 code 段，
+  // 否则反引号会当正文漏到屏幕上（手机上真的这样显示过）。
+  const double = app.mdInline('（`` `D:\\tmp\\a.js:1` ``）')
+  check('T26 双反引号代码段不漏反引号', double.includes('<code>') && !double.includes('``'), double)
+  check('T26 双反引号里的内容保持原样', double.includes('D:\\tmp\\a.js:1') && !double.includes('file-chip'), double)
 
   const code = app.mdInline('用 `npm run build` 构建')
   check('T26 普通行内代码不受影响', code.includes('<code>npm run build</code>'), code)

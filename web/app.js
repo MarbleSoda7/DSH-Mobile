@@ -137,6 +137,8 @@ function escapeHtml(text) {
  * "只有文件名+后缀"的超链接，绝对路径藏在链接里。
  * 手机端如果不做这件事，就会把一长串绝对路径原样铺在气泡里（用户 m00129）。
  * 这里统一渲染成小芯片：只显示文件名（+行号），点一下复制完整路径。
+ * 注意（用户 m00358）：只处理"链接形式"的文件引用。行内代码里的纯路径保持原样，
+ * 有时候就是要输出完整路径，不要去改。
  */
 function isLocalFileTarget(value) {
   const target = String(value || '').trim()
@@ -192,13 +194,12 @@ function mdInline(text) {
     },
   )
   let html = escapeHtml(withLinks)
-    // 行内代码：内容就是一个本地路径（`D:\a\b\app.js:12`）时也当文件芯片，
-    // 否则手机上会把整条路径当代码铺开。
-    .replace(/`([^`\n]+)`/g, (match, inner) => {
-      const plain = inner.trim()
-      if (!/[\s]/.test(plain) && isLocalFileTarget(plain)) return protect(fileChipHtml(plain, ''))
-      return `<code>${inner}</code>`
-    })
+    // 双反引号代码段（`` `x` ``）：里面单个反引号是字面量。必须排在单反引号之前，
+    // 否则外层 `` 会被当成空的 code 段，反引号当正文漏在屏幕上（用户截图里出现过）。
+    .replace(/``\s?([^\n]+?)\s?``/g, '<code>$1</code>')
+    // 行内代码一律原样显示（用户 m00358：纯路径不要去改，有些时候就是要输出完整路径）。
+    // 只有"链接形式的文件引用"才变芯片——那本来在电脑端也是超链接。
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
