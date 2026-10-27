@@ -713,3 +713,85 @@ body { padding: 0; }
 }
 .composer .model-chip:active { background: rgba(77, 141, 255, 0.18); }
 .composer .model-chip.running { color: var(--accent); border-color: rgba(77, 141, 255, 0.55); }
+/* ---------------------------------------------------------------- 会话分组 */
+/* 与电脑版一致：会话按项目（工作区）分组，组头可折叠，默认展开。 */
+.session-group { margin-bottom: 10px; }
+.group-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  letter-spacing: 0.3px;
+  text-align: left;
+}
+.group-chev { flex: none; width: 12px; transition: transform 0.15s ease; transform: rotate(0deg); }
+.session-group.collapsed .group-chev { transform: rotate(-90deg); }
+.session-group.collapsed .group-body { display: none; }
+.group-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.group-count { flex: none; font-size: 11px; opacity: 0.7; }
+.group-body { display: flex; flex-direction: column; }
+
+/* ------------------------------------------------------------ 附件（图片） */
+.attach-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px 0;
+  overflow-x: auto;
+  background: rgba(11, 13, 18, 0.96);
+}
+.attach-cell { position: relative; flex: none; }
+.attach-thumb { width: 62px; height: 62px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); display: block; }
+.attach-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: #3a4152;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.attach-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+/* --------------------------------------------------- 流式思考（默认收起） */
+.delta-think {
+  margin: 4px 0 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.delta-think > summary { cursor: pointer; list-style: none; opacity: 0.9; }
+.delta-think > summary::-webkit-details-marker { display: none; }
+.delta-think-body {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 30vh;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  font-size: 12px;
+  color: #c6ccdb;
+}

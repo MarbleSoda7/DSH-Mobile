@@ -10,6 +10,14 @@ const state = {
   token: '',
   deviceName: '',
   sessions: new Map(),
+  // 项目（工作区）分组：服务端 /api/state 的 groups 字段，形状 {id,title,path,sessionIds}。
+  // 空数组时 groupSessions() 会退化成按 cwd 分组。
+  groups: [],
+  // 用户手动折叠起来的项目分组（按 group.key 记），存 localStorage。
+  collapsedGroups: new Set(),
+  // 待发送的图片：{id, mediaType, data(base64), name, url(blob 预览)}。
+  // 发送成功后清空；失败保留以便重试。
+  attachments: [],
   running: new Map(),
   turnOpen: new Map(),
   // 每轮开始的时刻，用来算"已完成，用时 x"。
@@ -263,6 +271,18 @@ async function attachmentUrl(hash) {
 }
 
 function imageNode(attachment) {
+  // 本地待发送/刚发送的图片只有 blob 预览地址，没有 attachmentId —— 直接用它显示，
+  // 否则乐观气泡里的图片会一直是"读取失败"。
+  if (attachment?.previewUrl && !attachment?.attachmentId) {
+    const preview = document.createElement('figure')
+    preview.className = 'msg-figure'
+    const thumb = document.createElement('img')
+    thumb.className = 'msg-image'
+    thumb.alt = attachment?.name || '图片'
+    thumb.src = attachment.previewUrl
+    preview.appendChild(thumb)
+    return preview
+  }
   const hash = attachmentHash(attachment)
   if (!hash) return null
   const wrap = document.createElement('figure')
@@ -286,6 +306,95 @@ function imageNode(attachment) {
     else wrap.textContent = `［图片 ${attachment?.name || hash.slice(0, 8)} 读取失败］`
   })
   return wrap
+}
+
+/* ------------------------------------------------ attachments (image upload) */
+
+// 从相册/相机选图 → 读成 base64 → 排进待发送列表。
+// 直接走 prompt 的 image 内容块，不经过额外上传接口：少一次往返、省流量。
+const ATTACH_MAX_BYTES = 6 * 1024 * 1024
+
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = String(reader.result || '')
+      const comma = text.indexOf(',')
+      resolve(comma >= 0 ? text.slice(comma + 1) : '')
+    }
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function renderAttachments() {
+  const bar = $('attach-bar')
+  if (!bar) return
+  bar.innerHTML = ''
+  const items = state.attachments
+  bar.classList.toggle('hidden', items.length === 0)
+  items.forEach((item, index) => {
+    const cell = document.createElement('div')
+    cell.className = 'attach-cell'
+    const img = document.createElement('img')
+    img.className = 'attach-thumb'
+    img.src = item.url
+    img.alt = item.name || '图片'
+    cell.appendChild(img)
+    const remove = document.createElement('button')
+    remove.className = 'attach-remove'
+    remove.type = 'button'
+    remove.textContent = '×'
+    remove.onclick = () => {
+      const item2 = state.attachments[index]
+      if (item2 && item2.url) URL.revokeObjectURL(item2.url)
+      state.attachments.splice(index, 1)
+      renderAttachments()
+    }
+    cell.appendChild(remove)
+    bar.appendChild(cell)
+  })
+}
+
+async function addFiles(files) {
+  const list = Array.from(files || [])
+  for (const file of list) {
+    if (!file || !/^image\//.test(file.type || '')) {
+      toast('只支持图片')
+      continue
+    }
+    if (file.size > ATTACH_MAX_BYTES) {
+      toast(`图片太大（${Math.round(file.size / 1024)}KB），请小于 6MB`)
+      continue
+    }
+    try {
+      const data = await readAsBase64(file)
+      if (!data) continue
+      state.attachments.push({
+        id: `a${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        mediaType: file.type || 'image/png',
+        data,
+        name: file.name || 'image',
+        bytes: file.size,
+        url: URL.createObjectURL(file),
+      })
+    } catch (error) {
+      toast(error.message)
+    }
+  }
+  renderAttachments()
+}
+
+function bindAttach() {
+  const button = $('btn-attach')
+  const input = $('file-input')
+  if (button && input) {
+    button.onclick = () => input.click()
+    input.onchange = async () => {
+      await addFiles(input.files)
+      input.value = ''
+    }
+  }
 }
 
 function toast(text, ms = 2600) {
@@ -365,20 +474,50 @@ async function pair(code) {
 
 /* ----------------------------------------------------------- session list */
 
-function renderSessions() {
-  const list = $('session-list')
-  list.innerHTML = ''
-  const items = Array.from(state.sessions.values())
-    .filter((session) => session && session.blank !== true)
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-  $('list-empty').classList.toggle('hidden', items.length > 0)
+// 把会话按"项目（工作区）"归类，和电脑版一致。
+// 分组归属由服务端从 workspaceRegistry 取（groups 字段）；
+// 万一宿主没装 registry，就退化成按 cwd 的最后一段目录名分组，绝不退回一长条平铺。
+function groupSessions(items) {
+  const byId = new Map(items.map((session) => [session.id, session]))
+  const groups = []
+  const used = new Set()
+  for (const group of state.groups || []) {
+    const members = []
+    for (const id of group.sessionIds || []) {
+      const session = byId.get(id)
+      if (!session || used.has(id)) continue
+      used.add(id)
+      members.push(session)
+    }
+    if (members.length === 0) continue
+    members.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    groups.push({ key: group.id || group.path || group.title, title: group.title || '未命名项目', path: group.path || '', sessions: members })
+  }
+  const loose = new Map()
   for (const session of items) {
-    const running = state.running.get(session.id) ?? session.running
-    const row = document.createElement('div')
-    row.className = 'session-item'
-    const title = session.title || '未命名会话'
-    const model = session.model ? `${session.model.model}${session.model.reasoningEffort ? ' · ' + session.model.reasoningEffort : ''}` : ''
-    row.innerHTML = `
+    if (used.has(session.id)) continue
+    const cwd = session.cwd || ''
+    const key = cwd || '__none__'
+    if (!loose.has(key)) {
+      loose.set(key, { key, title: cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() || cwd : '未归类', path: cwd, sessions: [] })
+    }
+    loose.get(key).sessions.push(session)
+  }
+  for (const group of loose.values()) {
+    group.sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    groups.push(group)
+  }
+  groups.sort((a, b) => (b.sessions[0]?.updatedAt || 0) - (a.sessions[0]?.updatedAt || 0))
+  return groups
+}
+
+function sessionRow(session) {
+  const running = state.running.get(session.id) ?? session.running
+  const row = document.createElement('div')
+  row.className = 'session-item'
+  const title = session.title || '未命名会话'
+  const model = session.model ? `${session.model.model}${session.model.reasoningEffort ? ' · ' + session.model.reasoningEffort : ''}` : ''
+  row.innerHTML = `
       <div class="session-head">
         <div class="session-title">${escapeHtml(title)}</div>
         ${running ? '<span class="tag run">运行中</span>' : ''}
@@ -386,11 +525,47 @@ function renderSessions() {
       <div class="session-meta">
         <span>${ago(session.updatedAt)}</span>
         ${model ? `<span class="tag">${escapeHtml(model)}</span>` : ''}
-        ${session.cwd ? `<span>${escapeHtml(session.cwd.split(/[\\/]/).pop() || '')}</span>` : ''}
       </div>`
-    row.onclick = () => openChat(session.id)
-    list.appendChild(row)
+  row.onclick = () => openChat(session.id)
+  return row
+}
+
+function renderSessions() {
+  const list = $('session-list')
+  list.innerHTML = ''
+  const items = Array.from(state.sessions.values())
+    .filter((session) => session && session.blank !== true)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+  $('list-empty').classList.toggle('hidden', items.length > 0)
+  for (const group of groupSessions(items)) {
+    const collapsed = state.collapsedGroups.has(group.key)
+    const box = document.createElement('div')
+    box.className = `session-group${collapsed ? ' collapsed' : ''}`
+    const head = document.createElement('button')
+    head.className = 'group-head'
+    head.innerHTML = `
+      <span class="group-chev">⌄</span>
+      <span class="group-title">${escapeHtml(group.title)}</span>
+      <span class="group-count">${group.sessions.length}</span>`
+    head.onclick = () => {
+      if (state.collapsedGroups.has(group.key)) state.collapsedGroups.delete(group.key)
+      else state.collapsedGroups.add(group.key)
+      persistCollapsedGroups()
+      renderSessions()
+    }
+    box.appendChild(head)
+    const body = document.createElement('div')
+    body.className = 'group-body'
+    for (const session of group.sessions) body.appendChild(sessionRow(session))
+    box.appendChild(body)
+    list.appendChild(box)
   }
+}
+
+function persistCollapsedGroups() {
+  try {
+    localStorage.setItem('mr.collapsedGroups', JSON.stringify(Array.from(state.collapsedGroups)))
+  } catch {}
 }
 
 async function refreshState() {
@@ -410,6 +585,7 @@ async function refreshState() {
     dropped.push(id)
   }
   for (const id of dropped) await idb.delete('sessions', id).catch(() => {})
+  state.groups = Array.isArray(data.groups) ? data.groups : []
   if (typeof data.sessionsRev === 'number') state.sessionsRev = Math.max(state.sessionsRev || 0, data.sessionsRev)
   state.sessionsStale = false
   saveSessions()
@@ -666,11 +842,18 @@ function expandable(row, body, className = '') {
 
 // 正文落地后，把这一轮里还展开着的过程行（思考/工具）全部收起：
 // 电脑版就是这个行为，长回答时不会让一堆细节把正文挤走。
+// 除了 .ev-wrap，还要处理 <details>（流式思考块），否则"输出完成后收起所有思考"做不到。
 function collapseProcessRows() {
   const box = $('transcript')
   for (const node of box.children) {
-    if (node.classList && node.classList.contains('ev-wrap') && node.classList.contains('open')) {
+    if (!node.classList) continue
+    if (node.classList.contains('ev-wrap') && node.classList.contains('open')) {
       node.classList.remove('open')
+    }
+    if (node.classList.contains('msg')) {
+      for (const detail of node.querySelectorAll('details')) {
+        if (detail.open) detail.open = false
+      }
     }
   }
 }
@@ -943,7 +1126,24 @@ function appendReasoningRows(box, message, ctx = {}) {
 function ensureDeltaNode() {
   if (state.deltaNode && state.deltaNode.isConnected) return state.deltaNode
   const node = makeMessageNode('assistant streaming')
-  node.innerHTML = `<div class="role">DSH</div><div class="delta-body"></div>`
+  // 逐节点构建而不是拼 innerHTML：<details> 是嵌套结构，拼字符串在无 DOM 的
+  // 测试替身里解析不出来，也容易和 Markdown 渲染互相干扰。
+  const role = document.createElement('div')
+  role.className = 'role'
+  role.textContent = 'DSH'
+  node.appendChild(role)
+  const think = document.createElement('details')
+  think.className = 'delta-think hidden'
+  const summary = document.createElement('summary')
+  summary.textContent = '✦ 思考'
+  think.appendChild(summary)
+  const thinkBody = document.createElement('pre')
+  thinkBody.className = 'delta-think-body'
+  think.appendChild(thinkBody)
+  node.appendChild(think)
+  const body = document.createElement('div')
+  body.className = 'delta-body'
+  node.appendChild(body)
   $('transcript').appendChild(node)
   state.deltaNode = node
   return node
@@ -969,7 +1169,21 @@ function applyDelta(payload) {
   state.delta.text = payload.text || ''
   state.delta.reasoning = payload.reasoning || ''
   const node = ensureDeltaNode()
-  node.querySelector('.delta-body').innerHTML = renderText(state.delta.text) || '<span class="muted">…</span>'
+  // 思考内容也实时显示，但塞进一个默认收起的 <details>：
+  // 用户要求"输出完成后把思考全收起来"，流式期间同样不该让长思考占满屏幕。
+  const think = node.querySelector('.delta-think')
+  const thinkBody = node.querySelector('.delta-think-body')
+  if (think && thinkBody) {
+    const thinking = String(state.delta.reasoning || '').trim()
+    if (thinking) {
+      think.classList.remove('hidden')
+      thinkBody.textContent = thinking
+    } else {
+      think.classList.add('hidden')
+    }
+  }
+  const bodyNode = node.querySelector('.delta-body')
+  if (bodyNode) bodyNode.innerHTML = renderText(state.delta.text) || '<span class="muted">…</span>'
   if (stick) scrollBottom()
 }
 
@@ -2070,7 +2284,8 @@ function bindQueueSwipe() {
 async function send(mode = 'auto') {
   const area = $('composer')
   const text = area.value.trim()
-  if (!text || !state.current) return
+  const images = state.attachments.slice()
+  if ((!text && images.length === 0) || !state.current) return
   const sessionId = state.current
   // 默认行为必须与 DSH 一致：**永远是排队**（queue），由宿主决定这条消息是本轮
   // 之后执行、还是作为新一轮开始。以前这里按"是否在跑"自动切成 steer，结果用户
@@ -2081,16 +2296,29 @@ async function send(mode = 'auto') {
   area.value = ''
   autosize()
 
+  // 图片随消息一起发：宿主 prompt 的 content 支持 {type:'image', mediaType, data(base64)}，
+  // 不需要额外的上传接口（省一次往返，也省流量）。
+  const payload = { sessionId, text, mode: effective }
+  if (images.length > 0) {
+    payload.images = images.map((item) => ({ data: item.data, mediaType: item.mediaType, name: item.name }))
+  }
+  const clearAttachments = () => {
+    for (const item of state.attachments) if (item.url) URL.revokeObjectURL(item.url)
+    state.attachments = []
+    renderAttachments()
+  }
+
   // 本轮正在跑：这条消息是"排队消息"，用户期望的是**立刻看到排队条**，
   // 而不是先出现一个聊天气泡（那会让人以为已经发出去了，等半天才有排队框）。
   // 所以运行中只插排队占位，气泡留给宿主的 user/message 事件。
   if (effective === 'queue' && running) {
-    const placeholder = { itemId: `pending-${Date.now()}`, text, at: Date.now(), pending: true }
+    const placeholder = { itemId: `pending-${Date.now()}`, text: text || `[${images.length} 张图片]`, at: Date.now(), pending: true }
     const rows = state.queues.get(sessionId) || []
     state.queues.set(sessionId, [...rows, placeholder])
     if (sessionId === state.current) renderQueue()
     try {
-      await api('/api/prompt', { method: 'POST', body: JSON.stringify({ sessionId, text, mode: effective }) })
+      await api('/api/prompt', { method: 'POST', body: JSON.stringify(payload) })
+      clearAttachments()
     } catch (error) {
       const kept = (state.queues.get(sessionId) || []).filter((row) => row.itemId !== placeholder.itemId)
       state.queues.set(sessionId, kept)
@@ -2101,19 +2329,23 @@ async function send(mode = 'auto') {
   }
 
   const optimisticSeq = -Date.now()
+  const content = []
+  if (text) content.push({ type: 'text', text })
+  for (const item of images) content.push({ type: 'image', attachment: { attachmentId: '', mediaType: item.mediaType, bytes: item.bytes || 0, name: item.name, previewUrl: item.url } })
   const optimistic = {
     type: 'user/message',
     seq: optimisticSeq,
     sessionId,
     time: Date.now(),
     optimistic: true,
-    data: { message: { role: 'user', content: [{ type: 'text', text }] } },
+    data: { message: { role: 'user', content } },
   }
-  pendingPush(sessionId, optimisticSeq, text, optimistic)
+  pendingPush(sessionId, optimisticSeq, text || `[${images.length} 张图片]`, optimistic)
   appendEvent(optimistic)
   scrollBottom()
   try {
-    await api('/api/prompt', { method: 'POST', body: JSON.stringify({ sessionId, text, mode: effective }) })
+    await api('/api/prompt', { method: 'POST', body: JSON.stringify(payload) })
+    clearAttachments()
   } catch (error) {
     dropPending(sessionId, optimisticSeq)
     reflow()
@@ -2158,6 +2390,11 @@ async function boot() {
 
   state.token = localStorage.getItem(KEY_TOKEN) || ''
   state.deviceName = localStorage.getItem(KEY_NAME) || ''
+  // 折叠状态跟着设备走：用户折叠过的项目组，下次打开还是折叠的。
+  try {
+    const saved = JSON.parse(localStorage.getItem('mr.collapsedGroups') || '[]')
+    if (Array.isArray(saved)) state.collapsedGroups = new Set(saved.map(String))
+  } catch {}
 
   const params = new URLSearchParams(location.search)
   const tokenParam = params.get('t')
@@ -2218,6 +2455,7 @@ $('btn-back').onclick = leaveChat
 $('btn-stop').onclick = stopTurn
 $('btn-model').onclick = openModelSheet
 $('btn-send').onclick = () => send('auto')
+bindAttach()
 $('q-submit').onclick = submitQuestion
 $('q-dismiss').onclick = closeQuestion
 

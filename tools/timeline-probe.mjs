@@ -237,17 +237,26 @@ const localStorage = {
 
 // 网络一律不真发：只记录，避免测试依赖宿主。
 const fetchCalls = []
+// 请求体也记下来：图片上传、prompt 的 mode / images 都要靠它断言。
+const fetchBodies = []
 // page 的返回内容可被用例改写（T11 翻页需要真返回更早的事件）。
 let pageHandler = () => ({ ok: true, events: [], latestSeq: 0, hasMore: false })
 // /api/state 的返回内容也可被用例改写（T18 归档过滤要用真实的会话列表）。
 let stateHandler = null
-const fetchStub = async (url) => {
+const fetchStub = async (url, options = {}) => {
   const target = String(url)
   fetchCalls.push(target)
+  if (options && options.body) {
+    try {
+      fetchBodies.push({ url: target, body: JSON.parse(options.body) })
+    } catch {
+      fetchBodies.push({ url: target, body: options.body })
+    }
+  }
   const json = target.includes('/api/state')
     ? stateHandler
       ? stateHandler(target)
-      : { ok: true, sessions: [], hiddenBlank: 0, defaultModel: null }
+      : { ok: true, sessions: [], hiddenBlank: 0, defaultModel: null, groups: [] }
     : target.includes('/api/catalog')
       ? { ok: true, catalog: { default: null, groups: [] } }
       : target.includes('/page')
@@ -271,15 +280,32 @@ class EventSource {
 const navigator = {}
 const locationStub = { search: '', hash: '', href: 'http://127.0.0.1:7788/' }
 const windowStub = { addEventListener: () => {} }
+// 选图用到的 FileReader：Node 没有，给个最小替身。
+// 读的是 file.__base64（用例直接给内容），readAsDataURL 异步回调 onload。
+class FileReaderStub {
+  constructor() {
+    this.result = ''
+    this.onload = null
+    this.onerror = null
+  }
+  readAsDataURL(file) {
+    const base64 = String((file && file.__base64) || '')
+    const type = (file && file.type) || 'image/png'
+    this.result = `data:${type};base64,${base64}`
+    setTimeout(() => {
+      if (this.onload) this.onload()
+    }, 0)
+  }
+}
 
 /* ------------------------------------------------------------------ 载入脚本 */
 
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
-  'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState }',
+  'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send }',
 )
-const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console)
+const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
 /* ------------------------------------------------------------------ 断言工具 */
 
@@ -638,6 +664,96 @@ console.log('T18 归档变化推 sessions 帧后列表刷新')
     timelineText().length >= 0 && rows[0]?.textContent.includes('还在的会话'),
     rows[0]?.textContent || '',
   )
+}
+
+// T19 会话按项目（工作区）分组显示，组头可折叠（用户 m07568 第 2 条）。
+console.log('T19 会话按项目分组')
+{
+  reset()
+  app.state.sessions = new Map()
+  app.state.sessions.set('s1', { id: 's1', title: '甲会话', updatedAt: 30, blank: false, cwd: 'D:\\work\\alpha' })
+  app.state.sessions.set('s2', { id: 's2', title: '乙会话', updatedAt: 20, blank: false, cwd: 'D:\\work\\beta' })
+  app.state.sessions.set('s3', { id: 's3', title: '丙会话', updatedAt: 10, blank: false, cwd: 'D:\\work\\alpha' })
+  app.state.groups = [
+    { id: 'w1', title: 'alpha 项目', path: 'D:\\work\\alpha', sessionIds: ['s1', 's3'] },
+    { id: 'w2', title: 'beta 项目', path: 'D:\\work\\beta', sessionIds: ['s2'] },
+  ]
+  app.state.collapsedGroups = new Set()
+  app.renderSessions()
+  const list = document.getElementById('session-list')
+  const groups = list.querySelectorAll('.session-group')
+  check('T19 会话被分成两个项目组', groups.length === 2, `groups=${groups.length}`)
+  const titles = groups.map((group) => group.querySelector('.group-head').textContent.replace(/\s+/g, ' ').trim())
+  check('T19 组头显示项目名与数量', /alpha 项目/.test(titles[0]) && /2/.test(titles[0]), titles[0] || '')
+  check('T19 组内会话数量正确', groups[0].querySelectorAll('.session-item').length === 2, String(groups[0].querySelectorAll('.session-item').length))
+  // 点组头折叠
+  groups[0].querySelector('.group-head').onclick()
+  const collapsed = document.getElementById('session-list').querySelectorAll('.session-group')[0]
+  check('T19 点击组头后折叠', collapsed.classList.contains('collapsed'), collapsed.className)
+  // 没在 groups 里的会话按 cwd 兜底成组，不能丢
+  app.state.collapsedGroups = new Set()
+  app.state.groups = []
+  app.renderSessions()
+  const fallback = document.getElementById('session-list').querySelectorAll('.session-group')
+  check('T19 无分组信息时按 cwd 兜底成组', fallback.length === 2, `groups=${fallback.length}`)
+}
+
+// T20 手机端选图 → base64 随 prompt 一起发（用户 m07568 第 3 条）。
+console.log('T20 图片随消息发送')
+{
+  reset()
+  app.state.attachments = []
+  app.state.current = 'sess-A'
+  // 真机上 file 是 File(Blob)：这里用真 Blob 才过得了 URL.createObjectURL。
+  const file = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
+  file.__base64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  file.name = 'pixel.png'
+  await app.addFiles([file])
+  check('T20 选图后进入待发送列表', app.state.attachments.length === 1, String(app.state.attachments.length))
+  check('T20 图片读成 base64', String(app.state.attachments[0]?.data || '').startsWith('iVBOR'), String(app.state.attachments[0]?.data || '').slice(0, 12))
+  check('T20 媒体类型正确', app.state.attachments[0]?.mediaType === 'image/png', String(app.state.attachments[0]?.mediaType))
+  const bar = document.getElementById('attach-bar')
+  check('T20 附件栏出现缩略图', bar.querySelectorAll('.attach-thumb').length === 1, String(bar.querySelectorAll('.attach-thumb').length))
+  app.state.turnOpen = new Map()
+  app.state.running = new Map()
+  document.getElementById('composer').value = '看图'
+  const bodyBefore = fetchBodies.length
+  await app.send('auto')
+  const promptCall = fetchBodies.slice(bodyBefore).find((item) => item.url.includes('/api/prompt'))
+  check('T20 prompt 请求带 images', Array.isArray(promptCall?.body?.images) && promptCall.body.images.length === 1, JSON.stringify(promptCall?.body || {}).slice(0, 120))
+  check('T20 图片数据随请求发出', String(promptCall?.body?.images?.[0]?.data || '').startsWith('iVBOR'), String(promptCall?.body?.images?.[0]?.data || '').slice(0, 12))
+  check('T20 发送后清空待发送图片', app.state.attachments.length === 0, String(app.state.attachments.length))
+}
+
+// T21 输出完成后把思考全部收起（用户 m07568 第 1 条）。
+//     - 正文落地时，思考行必须是收起状态；
+//     - 用户手动展开过，也要在这一轮结束时被收起；
+//     - 流式期间的思考块（details）同样不能留成展开。
+console.log('T21 输出完成后收起所有思考')
+{
+  reset()
+  app.handleFrame('event', {
+    type: 'assistant/message', seq: 70, time: 7000, sessionId: 'sess-A',
+    data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: '先想很久很久然后给答案' }, { type: 'text', text: '答案在这里' }] } },
+  })
+  const box = document.getElementById('transcript')
+  const thinkWrap = box.querySelector('.ev-think-wrap')
+  check('T21 思考行画在气泡外', Boolean(thinkWrap) && !thinkWrap.closest('.msg'), thinkWrap ? thinkWrap.className : 'none')
+  check('T21 正文落地后思考默认收起', thinkWrap && !thinkWrap.classList.contains('open'), thinkWrap ? thinkWrap.className : 'none')
+  // 用户手动展开
+  thinkWrap.classList.add('open')
+  app.handleFrame('event', { type: 'turn/end', seq: 71, time: 8000, sessionId: 'sess-A', data: { reason: { kind: 'completed' } } })
+  check('T21 一轮结束后已展开的思考被收起', !thinkWrap.classList.contains('open'), thinkWrap.className)
+  // 流式思考块（details）也不能保持展开
+  app.state.current = 'sess-A'
+  app.applyDelta({ sessionId: 'sess-A', text: '正在写', reasoning: '流式思考内容', streaming: true })
+  const details = document.querySelector('.delta-think')
+  check('T21 流式思考用可折叠块显示', Boolean(details) && !details.classList.contains('hidden'), details ? details.className : 'none')
+  if (details) details.open = true
+  app.clearDelta()
+  // 假 DOM 的 remove() 不会把节点从 registry 里摘掉，所以断言"流式节点已释放"要看状态位，
+  // 不能靠 querySelector 找残留节点（那是测试替身的限制，不是实现问题）。
+  check('T21 流式结束思考块随之释放', app.state.deltaNode === null, String(app.state.deltaNode))
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
