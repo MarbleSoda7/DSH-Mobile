@@ -132,15 +132,83 @@ function escapeHtml(text) {
 }
 
 // ---- 轻量 Markdown 渲染（零依赖；先转义再拼标签，避免 XSS） ----
+
+/* 本地文件引用：电脑版 DSH 把 `[app.js:952](<D:\...\app.js#L952>)` 渲染成
+ * "只有文件名+后缀"的超链接，绝对路径藏在链接里。
+ * 手机端如果不做这件事，就会把一长串绝对路径原样铺在气泡里（用户 m00129）。
+ * 这里统一渲染成小芯片：只显示文件名（+行号），点一下复制完整路径。
+ */
+function isLocalFileTarget(value) {
+  const target = String(value || '').trim()
+  if (!target) return false
+  // 带 scheme 的（http / https / mailto / data…）不是本地文件；但 `D:\` 这种单字母盘符是。
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target) && !/^[a-zA-Z]:[\\/]/.test(target)) return false
+  if (/^[a-zA-Z]:[\\/]/.test(target)) return true
+  if (target.startsWith('\\\\')) return true
+  if (target.startsWith('/') || target.startsWith('./') || target.startsWith('../')) return true
+  // 剩下的是"看起来像文件"的相对路径（含扩展名且带分隔符）
+  return /[\\/]/.test(target) && /\.[a-zA-Z0-9]{1,8}(?::\d+)?$/.test(target)
+}
+
+function splitFileTarget(value) {
+  const raw = String(value || '').trim()
+  const hash = raw.match(/^(.*?)#L(\d+)(?:-L?(\d+))?$/)
+  if (hash) return { path: hash[1], line: hash[2], end: hash[3] || '' }
+  const colon = raw.match(/^(.*?\.[a-zA-Z0-9]{1,8}):(\d+)(?:-(\d+))?$/)
+  if (colon) return { path: colon[1], line: colon[2], end: colon[3] || '' }
+  return { path: raw, line: '', end: '' }
+}
+
+function fileChipHtml(target, label) {
+  const { path, line, end } = splitFileTarget(target)
+  const base = path.split(/[\\/]/).filter(Boolean).pop() || path
+  // 标签本身是短名（app.js:12）就用它；是一整条路径就退化成 basename。
+  const rawLabel = String(label || '').trim()
+  let name = rawLabel && !/[\\/]/.test(rawLabel) ? rawLabel : base
+  const lineText = line ? `:${line}${end ? `-${end}` : ''}` : ''
+  if (lineText && !name.endsWith(lineText) && !new RegExp(`:${line}(?:-${end || line})?$`).test(name)) name += lineText
+  const full = line ? `${path}:${line}${end ? `-${end}` : ''}` : path
+  return `<span class="file-chip" role="button" data-path="${escapeHtml(full)}">`
+    + `<span class="file-chip-name">${escapeHtml(name)}</span></span>`
+}
+
 function mdInline(text) {
-  return escapeHtml(text)
-    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+  // 先把链接 / 文件芯片抽出来存成占位符，再做转义：
+  // 路径里的 `<` `>` `&` 经过 escapeHtml 就没法再解析链接了。
+  const saved = []
+  const protect = (html) => {
+    saved.push(html)
+    return `\u0001${saved.length - 1}\u0001`
+  }
+  const withLinks = String(text ?? '').replace(
+    /\[([^\]\n]+)\]\(\s*<?([^)>\n]+?)>?\s*\)/g,
+    (match, label, href) => {
+      const target = String(href).trim()
+      if (/^https?:\/\//i.test(target)) {
+        return protect(`<a href="${escapeHtml(target)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`)
+      }
+      if (isLocalFileTarget(target)) return protect(fileChipHtml(target, label))
+      return match
+    },
+  )
+  let html = escapeHtml(withLinks)
+    // 行内代码：内容就是一个本地路径（`D:\a\b\app.js:12`）时也当文件芯片，
+    // 否则手机上会把整条路径当代码铺开。
+    .replace(/`([^`\n]+)`/g, (match, inner) => {
+      const plain = inner.trim()
+      if (!/[\s]/.test(plain) && isLocalFileTarget(plain)) return protect(fileChipHtml(plain, ''))
+      return `<code>${inner}</code>`
+    })
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
-    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
     // 裸链接（前面是行首/空白/左括号才算，避免把已生成 <a href="..."> 再包一层）
     .replace(/(^|[\s(])(https?:\/\/[^\s<)"]+)/g, '$1<a href="$2" target="_blank" rel="noreferrer">$2</a>')
+  // 还原占位符（可能是嵌套的，循环几次直到没有）
+  for (let guard = 0; guard < 5 && /\u0001\d+\u0001/.test(html); guard += 1) {
+    html = html.replace(/\u0001(\d+)\u0001/g, (match, index) => saved[Number(index)] ?? '')
+  }
+  return html
 }
 
 function mdTable(lines) {
@@ -409,6 +477,38 @@ function toast(text, ms = 2600) {
   node.classList.remove('hidden')
   clearTimeout(toast.timer)
   toast.timer = setTimeout(() => node.classList.add('hidden'), ms)
+}
+
+/* 复制到剪贴板。
+ * 公网入口是 http://<IP>:7788，不是安全上下文，navigator.clipboard 直接不存在，
+ * 所以必须带 execCommand('copy') 兜底，否则手机上点了文件芯片毫无反应。 */
+async function copyText(text) {
+  const value = String(text || '')
+  if (!value) return false
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+  } catch (error) {
+    // 落到下面的 execCommand 兜底
+  }
+  try {
+    const area = document.createElement('textarea')
+    area.value = value
+    area.setAttribute('readonly', 'readonly')
+    area.style.position = 'fixed'
+    area.style.top = '-1000px'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    area.setSelectionRange(0, value.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(area)
+    return ok
+  } catch (error) {
+    return false
+  }
 }
 
 function showView(name) {
@@ -2675,6 +2775,21 @@ function onTranscriptScroll() {
 }
 
 $('transcript').addEventListener('scroll', onTranscriptScroll, { passive: true })
+// 文件芯片：点一下复制完整路径（手机上没法"打开本地文件"，复制是最有用的一步）。
+// 用事件委托，历史消息重放/翻页插入的节点不需要单独绑定。
+$('transcript').addEventListener('click', (event) => {
+  const chip = event.target && event.target.closest ? event.target.closest('.file-chip') : null
+  if (!chip) return
+  event.preventDefault()
+  const path = chip.dataset.path || ''
+  copyText(path).then((ok) => toast(ok ? `已复制路径：${shortPath(path)}` : '复制失败，请长按选择'))
+})
+
+function shortPath(path) {
+  const value = String(path || '')
+  const parts = value.split(/[\\/]/).filter(Boolean)
+  return parts.length > 2 ? `…\\${parts.slice(-2).join('\\')}` : value
+}
 window.addEventListener('scroll', onTranscriptScroll, { passive: true })
 document.addEventListener('scroll', onTranscriptScroll, { passive: true, capture: true })
 // 排队条：多条时上下滑动切换（必须在这里绑定，元素在 boot 时已存在）

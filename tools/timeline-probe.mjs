@@ -303,7 +303,7 @@ class FileReaderStub {
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
@@ -917,6 +917,36 @@ console.log('\nT24 本地改动不被旧快照覆盖（用户 m08363：编辑/�
   app.handleFrame('queue', { sessionId: 'sess-A', items: [{ itemId: 'y1', text: '要删掉的', at: Date.now() }] })
   const afterRemove = (app.state.queues.get('sess-A') || []).length
   check('T24 旧快照不会让已删除的条目复活', afterRemove === 0, String(afterRemove))
+}
+
+// T26 本地文件引用只显示"文件名+后缀"（用户 m00129：手机端不要铺开一长串绝对路径）。
+console.log('\nT26 文件引用渲染成文件名芯片')
+{
+  // 只看"用户眼睛能看到的字"：data-path 里保留完整路径是有意的（点击复制用）。
+  const visible = (html) => String(html).replace(/<[^>]*>/g, '')
+  const WINDOWS_PATH = new RegExp('D:' + '\\\\' + 'SDU')
+
+  const html = app.mdInline('[app.js:952](<D:\\SDU\\IC\\HarnessProject\\guide-dog-peta\\dsh-mobile-remote\\web\\app.js#L952>)')
+  check('T26 渲染成 file-chip', html.includes('class="file-chip"'), html)
+  check('T26 只显示文件名+行号', visible(html).trim() === '▤app.js:952' || visible(html).trim() === 'app.js:952', visible(html))
+  check('T26 可见文字里没有绝对路径', !WINDOWS_PATH.test(visible(html)) && !visible(html).includes('HarnessProject'), visible(html))
+  check('T26 完整路径藏在 data-path', html.includes('data-path="D:\\SDU\\IC\\HarnessProject') && html.includes(':952"'), html)
+
+  const styled = app.mdInline('[style.css:545](<D:\\SDU\\IC\\HarnessProject\\guide-dog-peta\\dsh-mobile-remote\\web\\style.css#L545>)')
+  check('T26 第二个文件同样只留文件名', visible(styled).includes('style.css:545') && !visible(styled).includes('guide-dog-peta'), visible(styled))
+
+  const bare = app.mdInline('看 `D:\\SDU\\IC\\HarnessProject\\guide-dog-peta\\dsh-mobile-remote\\lib\\index.js:41` 这行')
+  check('T26 行内代码里的路径也变芯片', bare.includes('class="file-chip"') && visible(bare).includes('index.js:41') && !WINDOWS_PATH.test(visible(bare)), visible(bare))
+
+  const code = app.mdInline('用 `npm run build` 构建')
+  check('T26 普通行内代码不受影响', code.includes('<code>npm run build</code>'), code)
+
+  const link = app.mdInline('见 [文档](https://example.com/doc) 说明')
+  check('T26 外链仍是 a 标签', link.includes('href="https://example.com/doc"') && link.includes('文档'), link)
+
+  const md = app.renderMarkdown('**改这里**\n\n[app.js:952](<D:\\SDU\\IC\\HarnessProject\\guide-dog-peta\\dsh-mobile-remote\\web\\app.js#L952>)\n')
+  check('T26 整段 Markdown 里同样生效', md.includes('class="file-chip"') && !WINDOWS_PATH.test(visible(md)), visible(md))
+  check('T26 加粗等其他语法没被破坏', md.includes('<strong>改这里</strong>'), md.slice(0, 200))
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')

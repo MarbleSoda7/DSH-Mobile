@@ -523,6 +523,43 @@ body { padding: 0; }
 }
 .msg-text pre.md-pre { margin: 10px 0; padding: 10px; background: #0e1117; border: 1px solid #2a3140; border-radius: 8px; overflow-x: auto; }
 .msg-text pre.md-pre code { background: none; border: 0; padding: 0; color: inherit; font-size: 12.5px; line-height: 1.5; white-space: pre; }
+/* 本地文件引用芯片：电脑版 DSH 只显示"文件名+后缀"，绝对路径藏在链接里。
+   手机端照抄就会铺开一整条 D:\...\xxx.js#L952，所以只留文件名，路径放 data-path，
+   点一下复制。宽度用 max-width + ellipsis 兜底，超长文件名也不会撑破气泡。 */
+.file-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  max-width: 100%;
+  padding: 1px 7px;
+  margin: 0 1px;
+  border-radius: 6px;
+  border: 1px solid rgba(125, 177, 255, 0.32);
+  background: rgba(125, 177, 255, 0.13);
+  color: #9ec5ff;
+  font-size: 13px;
+  line-height: 1.6;
+  vertical-align: baseline;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.file-chip::before {
+  content: '▤';
+  margin-right: 4px;
+  font-size: 10px;
+  opacity: .75;
+}
+.file-chip .file-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+.file-chip:active { background: rgba(125, 177, 255, 0.26); }
+.msg.user .file-chip { border-color: rgba(255, 255, 255, 0.42); background: rgba(255, 255, 255, 0.18); color: #fff; }
 .md-table { overflow-x: auto; margin: 10px 0; }
 .md-table table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
 .md-table th, .md-table td { border: 1px solid #2a3140; padding: 6px 9px; text-align: left; white-space: nowrap; }
