@@ -415,9 +415,27 @@ const allClosed = box.children.filter((node) => node.classList && node.classList
 check('T6 正文出现后过程行自动收起', allClosed)
 app.handleFrame('event', { type: 'turn/start', seq: 3, time: 1000, sessionId: 'sess-A', data: {} })
 app.handleFrame('event', { type: 'turn/end', seq: 4, time: 1000 + 65000, sessionId: 'sess-A', data: { reason: { kind: 'completed' } } })
-const last = box.children[box.children.length - 1]
-const summaryText = last ? last.textContent.replace(/\s+/g, ' ').trim() : ''
+// 汇总行现在插在正式回答之前（电脑版顺序），所以不能再取"最后一个节点"。
+const summaryNode = box.children.find((node) => node.className && node.className.includes('turn-summary'))
+const summaryText = summaryNode ? summaryNode.textContent.replace(/\s+/g, ' ').trim() : ''
 check('T6 一轮结束有「已完成，用时」汇总行', /已完成，用时 1 分 5 秒/.test(summaryText), summaryText)
+
+// T6d 汇总行的位置要跟电脑版一致：过程行 → 「已完成，用时 x」→ 正式回答。
+//      追加在最后会变成"回答完了才说已完成"（用户 m07850 明确要求改掉）。
+reset()
+app.handleFrame('event', { type: 'turn/start', seq: 20, time: 2000, sessionId: 'sess-A', data: {} })
+app.handleFrame('event', {
+  type: 'tool/call', seq: 21, time: 2100, sessionId: 'sess-A',
+  data: { name: 'pwsh', arguments: '{"command":"dir"}', summary: { kind: 'cmd', verb: '运行命令', target: 'dir' } },
+})
+app.handleFrame('event', asstEv(22, '正式的最终回答'))
+app.handleFrame('event', { type: 'turn/end', seq: 23, time: 2000 + 12000, sessionId: 'sess-A', data: { reason: { kind: 'completed' } } })
+const orderBox = document.getElementById('transcript')
+const orderClasses = orderBox.children.map((node) => node.className)
+const summaryIndex = orderClasses.findIndex((name) => name.includes('turn-summary'))
+const answerIndex = orderClasses.findIndex((name) => name.includes('msg') && name.includes('assistant'))
+check('T6d 汇总行在正式回答之前', summaryIndex >= 0 && answerIndex > summaryIndex, JSON.stringify(orderClasses))
+check('T6d 汇总行在过程行之后', summaryIndex > orderClasses.findIndex((name) => name.includes('ev-wrap')), JSON.stringify(orderClasses))
 
 // T6b 过程行必须带 .ev-row（灰色 12.5px 单行）：曾经写成 .ev，样式表里没有对应规则，
 // 结果"编辑/读取/已完成"退化成白色 15px 正文、也不在同一行。这条断言防止再退化。
@@ -698,6 +716,28 @@ console.log('T19 会话按项目分组')
   check('T19 无分组信息时按 cwd 兜底成组', fallback.length === 2, `groups=${fallback.length}`)
 }
 
+// T23 同一个项目不能出现两块同名分组（用户 m07850：「有两个 guide dog peta」）。
+//     成因：某会话的 cwd 与已有 workspace 的 path 相同、但它不在该 workspace 的 sessionIds 里
+//     （API 新建的会话、解绑过的会话），旧逻辑会按 cwd 再建一个同名组。
+console.log('T23 同名项目不重复分组')
+{
+  reset()
+  app.state.sessions = new Map()
+  app.state.sessions.set('a1', { id: 'a1', title: '组内会话', updatedAt: 30, blank: false, cwd: 'D:\\work\\alpha' })
+  app.state.sessions.set('a2', { id: 'a2', title: '游离会话', updatedAt: 40, blank: false, cwd: 'D:\\work\\alpha' })
+  app.state.sessions.set('a3', { id: 'a3', title: '别的项目', updatedAt: 10, blank: false, cwd: 'D:\\work\\beta' })
+  app.state.groups = [
+    { id: 'w1', title: 'alpha 项目', path: 'D:\\work\\alpha', sessionIds: ['a1'] },
+  ]
+  app.state.collapsedGroups = new Set()
+  app.renderSessions()
+  const groups = document.getElementById('session-list').querySelectorAll('.session-group')
+  const titles = groups.map((group) => group.querySelector('.group-head').textContent.replace(/\s+/g, ' ').trim())
+  const alphaCount = titles.filter((title) => title.includes('alpha 项目')).length
+  check('T23 同一个项目只有一块分组', alphaCount === 1, titles.join(' | '))
+  check('T23 游离会话并进同路径的项目', groups[0].querySelectorAll('.session-item').length === 2, String(groups[0].querySelectorAll('.session-item').length))
+}
+
 // T20 手机端选图 → base64 随 prompt 一起发（用户 m07568 第 3 条）。
 console.log('T20 图片随消息发送')
 {
@@ -754,6 +794,53 @@ console.log('T21 输出完成后收起所有思考')
   // 假 DOM 的 remove() 不会把节点从 registry 里摘掉，所以断言"流式节点已释放"要看状态位，
   // 不能靠 querySelector 找残留节点（那是测试替身的限制，不是实现问题）。
   check('T21 流式结束思考块随之释放', app.state.deltaNode === null, String(app.state.deltaNode))
+}
+
+// T22 排队条的合并规则（用户 m07884：「手机发送排队信息会直接消失吞掉」）。
+//     服务端是唯一真源，但刚落地的占位不能立刻被清掉，否则用户点完发送就看不到任何东西：
+//       - 服务端已认下（items 里有同文本）→ 丢掉本地占位，只留服务端那条；
+//       - 服务端还没认下（items 空）且占位很新 → 保留占位（"发送中…"）；
+//       - 占位太老（> 6 秒）→ 丢掉，避免永远挂在手机上。
+console.log('T22 排队条占位与服务端快照合并')
+{
+  reset()
+  app.state.current = 'sess-A'
+  const fresh = { itemId: 'pending-1', text: '刚发出的排队消息', at: Date.now(), pending: true }
+  app.state.queues.set('sess-A', [fresh])
+  app.handleFrame('queue', { sessionId: 'sess-A', items: [] })
+  const keptFresh = (app.state.queues.get('sess-A') || []).length
+  check('T22 刚落地的占位不会被空快照清掉', keptFresh === 1, String(keptFresh))
+
+  const stale = { itemId: 'pending-2', text: '很久以前的排队消息', at: Date.now() - 60000, pending: true }
+  app.state.queues.set('sess-A', [stale])
+  app.handleFrame('queue', { sessionId: 'sess-A', items: [] })
+  const keptStale = (app.state.queues.get('sess-A') || []).length
+  check('T22 超时的占位会被清掉', keptStale === 0, String(keptStale))
+
+  app.state.queues.set('sess-A', [{ ...fresh, at: Date.now() }])
+  app.handleFrame('queue', {
+    sessionId: 'sess-A',
+    items: [{ itemId: 'real-1', text: '刚发出的排队消息', at: Date.now() }],
+  })
+  const merged = app.state.queues.get('sess-A') || []
+  check('T22 服务端认下后只留一条', merged.length === 1 && merged[0].itemId === 'real-1', JSON.stringify(merged))
+
+  // 队列里有多条时按顺序显示，pager 的下标不能越界（用户 m06862 要求上下滑动切换）。
+  app.state.queues.set('sess-A', [
+    { itemId: 'q1', text: '第一条', at: Date.now() },
+    { itemId: 'q2', text: '第二条', at: Date.now() },
+  ])
+  app.state.queueIndex = new Map([['sess-A', 5]])
+  app.state.current = 'sess-A'
+  app.handleFrame('queue', {
+    sessionId: 'sess-A',
+    items: [
+      { itemId: 'q1', text: '第一条', at: Date.now() },
+      { itemId: 'q2', text: '第二条', at: Date.now() },
+    ],
+  })
+  const index = app.state.queueIndex.get('sess-A')
+  check('T22 队列变短后下标被夹到范围内', index >= 0 && index <= 1, String(index))
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')

@@ -243,6 +243,15 @@ await new Promise((resolve) => setTimeout(resolve, 500))
 const delta = received.find((item) => item.name === 'delta')
 check('SSE 收到流式 delta', delta?.payload?.text === '流式片段')
 
+// 5b) 步骤边界必须清空流式缓冲：否则下一段流式会把前几步的正文整段重发，
+//     手机上出现"好几个回答合并成一个 DSH 气泡"，等正式消息到达又消失（真机 bug）。
+fire({ id: 'sess-1' }, { type: 'assistant/message', seq: 10, time: Date.now(), data: { message: { role: 'assistant', content: [{ type: 'text', text: '第一段' }] }, stream: [] } })
+await new Promise((resolve) => setTimeout(resolve, 120))
+streamFn({ agent: { session: { id: 'sess-1' } }, frame: { type: 'chunk', chunk: { type: 'text-delta', text: '第二段' } } })
+await new Promise((resolve) => setTimeout(resolve, 500))
+const deltaAfterBoundary = received.filter((item) => item.name === 'delta').pop()
+check('步骤边界后流式缓冲已清空', deltaAfterBoundary?.payload?.text === '第二段')
+
 // 6) 排队消息：真源是 agent/inbox/spliced
 const splice = (data) => fire({ id: 'sess-1' }, { type: 'agent/inbox/spliced', seq: 20, time: Date.now(), data })
 splice({ target: 'next-turn', start: 0, inserted: [{ id: 'm-1', role: 'user', content: [{ type: 'text', text: '排队的消息' }] }] })

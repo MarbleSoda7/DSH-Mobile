@@ -743,10 +743,16 @@ body { padding: 0; }
   gap: 8px;
   padding: 8px 10px 0;
   overflow-x: auto;
-  background: rgba(11, 13, 18, 0.96);
+  /* 不要底色：缩略图直接浮在聊天底色上（用户要求"不要有底框"）。 */
+  background: transparent;
 }
 .attach-cell { position: relative; flex: none; }
-.attach-thumb { width: 62px; height: 62px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); display: block; }
+/* 纯悬浮缩略图：无边框、无底色，靠圆角和阴影浮起来。 */
+.attach-thumb {
+  width: 62px; height: 62px; object-fit: cover; border-radius: 10px;
+  border: 0; background: transparent; display: block;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
 .attach-remove {
   position: absolute;
   top: -6px;

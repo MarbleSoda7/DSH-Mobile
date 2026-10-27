@@ -22,6 +22,9 @@ const state = {
   turnOpen: new Map(),
   // 每轮开始的时刻，用来算"已完成，用时 x"。
   turnStartedAt: new Map(),
+  // 本轮是否已经插过"已完成，用时"汇总行：正文落地时插在正文之前，turn/end 只兜底补一次，
+  // 不能每轮出现两条。
+  turnSummaryDone: new Map(),
   cursors: {},
   current: '',
   es: null,
@@ -493,19 +496,54 @@ function groupSessions(items) {
     members.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
     groups.push({ key: group.id || group.path || group.title, title: group.title || '未命名项目', path: group.path || '', sessions: members })
   }
+  // 兜底：没归属到任何 workspace 的会话（API 直接创建的、工作区被解绑过的）按 cwd 归堆。
+  // 但如果某个 workspace 的 path 与这些 cwd 相同，必须**并进已有的那一组**，
+  // 否则列表里会出现两个同名项目（"guide-dog-peta" 两份），手机上看起来像重复。
+  const normPath = (value) => String(value || '').replace(/[\\/]+$/, '').toLowerCase()
+  const groupsByPath = new Map()
+  for (const group of groups) {
+    const pathKey = normPath(group.path)
+    if (pathKey) groupsByPath.set(pathKey, group)
+  }
   const loose = new Map()
   for (const session of items) {
     if (used.has(session.id)) continue
     const cwd = session.cwd || ''
+    const sameProject = cwd ? groupsByPath.get(normPath(cwd)) : null
+    if (sameProject) {
+      used.add(session.id)
+      sameProject.sessions.push(session)
+      continue
+    }
     const key = cwd || '__none__'
     if (!loose.has(key)) {
       loose.set(key, { key, title: cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() || cwd : '未归类', path: cwd, sessions: [] })
     }
     loose.get(key).sessions.push(session)
   }
+  for (const group of groups) {
+    if (group.sessions.length > 1) {
+      group.sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    }
+  }
   for (const group of loose.values()) {
     group.sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
     groups.push(group)
+  }
+  // 双保险：path 写法不同但标题同名的两块，再合成一块。
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const current = groups[index]
+    if (groupsByPath.has(normPath(current.path))) continue
+    const twin = groups.findIndex((other, otherIndex) => (
+      otherIndex < index
+      && other.title === current.title
+      && other.sessions.length > 0
+      && current.sessions.length > 0
+    ))
+    if (twin === -1) continue
+    groups[twin].sessions.push(...current.sessions)
+    groups[twin].sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    groups.splice(index, 1)
   }
   groups.sort((a, b) => (b.sessions[0]?.updatedAt || 0) - (a.sessions[0]?.updatedAt || 0))
   return groups
@@ -643,7 +681,21 @@ function renderChatHeader() {
 function makeMessageNode(role) {
   const node = document.createElement('div')
   node.className = `msg ${role}`
+  // 标记成"回答气泡"：turn/end 要把「已完成，用时 x」插在它前面（电脑版顺序），
+  // 靠这个类往回找，而不是靠位置猜。
+  if (role === 'assistant') node.classList.add('answer')
   return node
+}
+
+// 本轮最后一条正式回答的节点：汇总行插在它前面。
+// 找不到（纯过程轮、被中止）就返回 null，由 appendTurnSummary 追加到末尾。
+function lastAnswerNode(box) {
+  const children = Array.from(box.children || [])
+  for (let i = children.length - 1; i >= 0; i -= 1) {
+    const node = children[i]
+    if (node.classList && node.classList.contains('msg') && node.classList.contains('assistant') && node.classList.contains('answer')) return node
+  }
+  return null
 }
 
 function appendDivider(text, isError) {
@@ -729,9 +781,12 @@ function appendEvent(event, target = null) {
     }
     case 'turn/end': {
       const reason = data.reason?.kind || ''
-      // 正文已落地：过程行全部收起，再给一行"已完成，用时 x"。
+      // 正文已落地：过程行全部收起。
       collapseProcessRows()
-      appendTurnSummary(event.time)
+      // 汇总行的位置要跟电脑版一致：过程行 → 「已完成，用时 x」→ 正式回答。
+      // 所以插在**本轮最后一条 assistant 气泡之前**，而不是追加在整轮最末尾
+      // （追加在末尾会变成"回答完了才说已完成"，用户 m07850 明确要求改掉）。
+      appendTurnSummary(event.time, lastAnswerNode(box))
       state.turnStartedAt.delete(state.current)
       if (reason === 'aborted') appendDivider('— 本轮已终止 —', false)
       else if (reason === 'error') appendDivider(`— 出错：${escapeHtml(String(data.reason?.error?.message || '').slice(0, 120))} —`, true)
@@ -870,7 +925,11 @@ function formatDuration(ms) {
 
 // 一轮结束给一行分隔式的"已完成，用时 x"（电脑版同款）：
 // 点这一行会把本轮的所有思考/工具行整批展开或收起。
-function appendTurnSummary(endAt) {
+//
+// 位置很关键（用户 m07850 的要求）：电脑版是「过程全部收起 → 一行"已完成，用时 xx"
+// → 正式回答」。所以正文落地时就要把这条汇总行插在**正文之前**，而不是等 turn/end
+// 之后追加在最后（那样汇总行会跑到回答下面，看起来像"回答完了才说已完成"）。
+function appendTurnSummary(endAt, before = null) {
   const started = state.turnStartedAt.get(state.current) || 0
   const end = Number(endAt) || Date.now()
   const ms = started ? end - started : 0
@@ -879,7 +938,12 @@ function appendTurnSummary(endAt) {
   row.className = 'turn-summary'
   row.innerHTML = `<span class="turn-summary-text">${escapeHtml(label)}</span><span class="ev-chev">⌄</span>`
   row.onclick = () => toggleTurnProcess(row)
-  $('transcript').appendChild(row)
+  const host = $('transcript')
+  const parent = before ? (before.parentNode || before.parent || null) : null
+  if (before && parent === host) host.insertBefore(row, before)
+  else host.appendChild(row)
+  state.turnSummaryDone.set(state.current, true)
+  return row
 }
 
 // 点"已完成，用时 x"：把它上面这一轮的过程行整批展开/收起。
@@ -2093,8 +2157,8 @@ function renderQueue() {
   if (!box) return
   const items = state.queues.get(state.current) || []
   // 当前显示的是第几条：切换时做一个淡入淡出，别硬切（用户要求"不要跳变"）。
-  const prevIndex = queueShownAt.get(state.current)
-  queueShownAt.set(state.current, clampQueueIndex(items))
+  const prevIndex = state.queueShownAt.get(state.current)
+  state.queueShownAt.set(state.current, clampQueueIndex(items))
   box.innerHTML = ''
   box.classList.toggle('hidden', items.length === 0)
   // 多条排队消息时，一次只展开一条，上下滑动切换（用户要的"上下切换消息"）。

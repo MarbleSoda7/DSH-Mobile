@@ -57,7 +57,8 @@ out('GET /api/queue', q)
 
 const poll = await fetch(`${BASE}/api/poll?k=${token}&c=`, { headers: auth }).then(j)
 out('poll frame types', (poll.frames || []).map((f) => f.type).join(','))
-const queueFrames = (poll.frames || []).filter((f) => f.type === 'queue')
+// 队列快照走 queueSync（不占 frames，否则长轮询会"一建立就立刻返回"）。
+const queueFrames = [...(poll.queueSync || []), ...(poll.frames || [])].filter((f) => f.type === 'queue')
 out('queue frames in poll', queueFrames.length)
 
 await sleep(2500)
