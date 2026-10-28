@@ -1,148 +1,172 @@
 # 安装 DSH Mobile Remote
 
-手机接管电脑上的 DeepSeek Harness。装完在电脑上开 `http://127.0.0.1:7788/admin` 扫码就能用。
+手机接管电脑上的 DeepSeek Harness。
 
-**不需要装任何 npm 依赖**，二维码是自己编码的，不依赖 `qrcode` 包。
+**装完即用，不需要 git、不需要 pnpm、不需要管理员权限、不需要 7-Zip。**
 
 ---
 
-## 0. 先确认一件事
+## 一句话版本
 
-DSH 的插件**必须挂在某个 profile 下**。先确认你的 profile 目录（下面用 `%USERPROFILE%\.dsh\profiles\desktop` 举例，profile 名不是 `desktop` 的话自己换）：
+下载 `DSH-Mobile-Setup.exe`，双击，按提示点完，重启 DSH。
 
-```powershell
-dir "$env:USERPROFILE\.dsh\profiles"
+---
+
+## 它到底做了什么
+
+安装器不会碰 DSH 自己的安装目录，全部活在当前用户下：
+
+| 步骤 | 位置 |
+| --- | --- |
+| 插件本体 | `%LOCALAPPDATA%\DSH-Mobile\app` |
+| 挂进 profile | `<profile>\node_modules\@local\dsh-mobile-remote`（junction，指向上面的 app） |
+| 注册插件 | `<profile>\cordis.patch.yml` 里追加一条 `insert:` |
+
+junction 和符号链接不同，**不需要管理员权限**。反复运行安装器是安全的：已存在的会覆盖更新，patch 里已有的条目不会重复插入。
+
+---
+
+## 完整步骤
+
+### 1. 先打开一次 DSH
+
+安装器要把插件挂进某个 profile。**profile 是 DSH 首次启动时才创建的**，所以请先运行一次 DeepSeek Harness，看到界面就行，不需要做什么。
+
+### 2. 双击 `DSH-Mobile-Setup.exe`
+
+会弹一个控制台窗口，最后有自检清单：
+
+```
+自检：
+  [OK]   宿主入口  (128,290 字节)
+  [OK]   二维码编码器  (18,365 字节)
+  [OK]   手机端外壳  (148,084 字节)
+  [OK]   管理页  (16,343 字节)
+  [OK]   配对浮层  (16,535 字节)
+  [OK]   frpc 隧道  (15,523,328 字节)
 ```
 
-看到 `desktop`（或你自己用的那个名字）就对了。
+有多个 profile 时会让你选装进哪一个。
+
+### 3. 重启 DSH
+
+### 4. 扫码
+
+打开 `http://127.0.0.1:7788/admin`，用手机扫二维码。
+
+也可以点 **DSH 侧边栏底部的手机图标**，效果一样。
 
 ---
 
-## 1. 下载插件
+## 装完自检
 
-```powershell
-cd "$env:USERPROFILE\Desktop"
-git clone https://github.com/MarbleSoda7/DSH-Mobile.git dsh-mobile-remote
+浏览器打开 `http://127.0.0.1:7788/api/health`，看到：
+
+```json
+{"ok":true,"rev":"...","devices":0,"streams":0}
 ```
 
-没有 git 的话，去仓库页面点 **Code → Download ZIP**，解压到 `%USERPROFILE%\Desktop\dsh-mobile-remote`。
+就说明插件起来了。
+
+也可以看 `http://127.0.0.1:7788/api/identity`：
+
+```json
+{"ok":true,"deviceId":"dev_...","port":9001,"state":"ok","origin":"http://8.152.5.127:9001"}
+```
+
+`port` 是你这台机器分到的公网端口，`origin` 就是二维码里编进去的地址。
 
 ---
 
-## 2. 挂进 profile
+## 出问题怎么办
 
-在 profile 目录下建一个指向插件目录的 **junction**（不需要管理员权限）：
+### `找不到任何 profile`
+
+DSH 还没启动过。先跑一次 DSH，再重新执行安装器。
+
+### `/api/health` 打不开
+
+1. 确认 DSH 重启过（不是只开了窗口）
+2. 确认 `cordis.patch.yml` 里有一行 `id: mobile-remote`
+3. 看 DSH 的日志里有没有 `[mobile-remote]`
+
+### `identity` 里 `state` 不是 `ok`
+
+| state | 含义 | 怎么办 |
+| --- | --- | --- |
+| `offline` | 连不上分配服务器 | 检查网络能否访问 `8.152.5.127:7789` |
+| `rejected` | 服务器拒绝 | 端口池满了，或者服务器换了地址 |
+| `no-frpc` | 找不到 frpc.exe | 重新跑安装器（自检里这一项会标红） |
+| `full` | 20 个槽位全满 | 等别人下线，或联系服务器维护者 |
+
+### 手机扫码提示「网页拒绝了您的访问」
+
+这个提示来自服务器，不是手机。说明你分到的端口上没有代理在监听——通常是本机 frpc 没起来。看 `%USERPROFILE%\.dsh\dsh-mobile-remote\frpc.log`。
+
+---
+
+## 卸载
 
 ```powershell
-$plugin  = "$env:USERPROFILE\Desktop\dsh-mobile-remote"
+# 1. 从 patch 里删掉 mobile-remote 那几段（或整段 insert）
+notepad "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml"
+
+# 2. 摘掉 junction
+cmd /c rmdir "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@local\dsh-mobile-remote"
+
+# 3. 删本体
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\DSH-Mobile"
+```
+
+配对记录和身份留在 `%USERPROFILE%\.dsh\dsh-mobile-remote\`，要彻底清掉也一起删。
+
+---
+
+## 自己打包安装包
+
+安装器用的是 .NET 的 zip 嵌入方案，开发机只要有 Windows 和 Node 就行：
+
+```powershell
+node tools/make-installer.mjs
+# → dist\DSH-Mobile-Setup.exe（约 6 MB）
+```
+
+不做压缩、只看收集了哪些文件：
+
+```powershell
+node tools/make-installer.mjs --no-zip
+# → dist\staging\
+```
+
+---
+
+## 开发者：手工安装
+
+不想用安装器的话，原来的方式仍然有效。
+
+```powershell
+$plugin  = "D:\path\to\dsh-mobile-remote"
 $profile = "$env:USERPROFILE\.dsh\profiles\desktop"
+
 New-Item -ItemType Directory -Force -Path "$profile\node_modules\@local" | Out-Null
 cmd /c mklink /J "$profile\node_modules\@local\dsh-mobile-remote" "$plugin"
 ```
 
-看到 `为 ... 创建的联接` / `Junction created` 就成功了。
-
-> `@local` 这个 scope 是刻意的：包名是 `@local/dsh-mobile-remote`，不是从 npm 装的，
-> 所以**千万不要**用 `pnpm add` 去装它，那个会变成 git 依赖然后失败。
-
----
-
-## 3. 写配置
-
-打开（没有就新建）`%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`，
-**追加**下面这一段（如果文件里已经有 `mobile-remote` 条目就跳过这步）：
+然后往 `cordis.patch.yml` 追加：
 
 ```yaml
 - insert:
     - id: mobile-remote
       name: '@local/dsh-mobile-remote'
       config:
-        host: '0.0.0.0'
-        port: 7788
-```
-
-`host: '0.0.0.0'` 表示同一个 WiFi 下手机能直连。只想本机用就写 `'127.0.0.1'`。
-
----
-
-## 4. 重启 DSH
-
-关掉 DSH 再打开（不是最小化，要真的退出）。
-
----
-
-## 5. 验证
-
-浏览器打开 `http://127.0.0.1:7788/api/health`，应该看到：
-
-```json
-{"ok":true,"rev":"r2026-10-28-builtinqr56",...}
-```
-
-看到了就说明插件跑起来了。
-
----
-
-## 6. 手机连接
-
-电脑浏览器打开 **`http://127.0.0.1:7788/admin`**，页面上有二维码和配对链接。
-
-- 手机和电脑连**同一个 WiFi**，直接扫二维码。
-- 二维码里的地址形如 `http://192.168.x.x:7788/?t=...`。如果电脑有多张网卡
-  （VPN / WSL / Docker / Radmin / Tailscale），`/admin` 页面上可以手动换地址。
-- 配对码 **2 分钟过期、一次即焚**，过期了点「换一个二维码」。
-
-进不去的话依次查：
-
-| 现象 | 原因 |
-|---|---|
-| 手机一直转圈 / 打不开 | Windows 防火墙拦了 7788。控制面板 → Windows Defender 防火墙 → 高级设置 → 入站规则 → 新建规则，TCP 放行 7788 |
-| 命令行 `ping` 不通 | 不在同一个网段，或者路由器的「AP 隔离 / 访客网络」开着 |
-| 手机打开提示「已被新的配对替换」 | 只允许一台手机。再配一台会把旧的踢掉（`maxDevices: 1`） |
-| 页面能开但列表是空的 | 电脑上的 DSH 没开任何会话 |
-
----
-
-## 7. 公网访问（不在同一 WiFi 时）
-
-外网访问必须走隧道，别直接把 7788 暴露到公网。两种做法见仓库 `README.md` 的
-「让手机连上 → B. 公网访问」，配好后把 `publicOrigin` 填成你的域名或服务器地址：
-
-```yaml
-      config:
         host: '127.0.0.1'
         port: 7788
-        publicOrigin: 'https://你的域名'
-        tunnel:
-          enabled: true
-          server: '你的服务器 IP'
-          user: root              # 建议换专用账号
-          remotePort: 7788        # 一台服务器上每台电脑要错开
-          keyPath: 'C:/Users/你/.ssh/id_ed25519'
 ```
 
----
+**注意**：手工装时，`deploy/pc/frpc.exe` 必须跟着插件目录一起在。安装器会把它放到 `%LOCALAPPDATA%\DSH-Mobile\app\deploy\pc\`，手工装则要保证 `$plugin\deploy\pc\frpc.exe` 存在——插件会自动去这几个地方找：
 
-## 卸载
+1. 配置里的 `tunnel.frpcPath`
+2. 插件目录下的 `deploy/pc/frpc.exe`
+3. `%USERPROFILE%\.dsh\dsh-mobile-remote\frpc.exe`
 
-删掉 junction 和配置段，重启 DSH：
-
-```powershell
-cmd /c rmdir "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@local\dsh-mobile-remote"
-```
-
-`rmdir` 删 junction 只删链接，不会删 `Desktop\dsh-mobile-remote` 里的东西。
-
----
-
-## 常见问题
-
-**插件管理页显示「等待依赖」**
-`inject` 里声明了 profile 没有的服务。本仓库当前版本已经是 `['sessionController']`，
-如果你看到这个提示，说明下载的是旧版（`git pull` 更新）。
-
-**`/api/health` 打不开，但 DSH 界面正常**
-插件没加载。看 DSH 日志里有没有 `[mobile-remote]`；没有的话检查第 2 步 junction 和第 3 步的 yaml 缩进。
-
-**二维码区域是空白**
-旧版依赖 `qrcode` 包。`git pull` 到最新版本即可，现在不依赖任何外部包。
+找不到时 `/api/identity` 的 `state` 会是 `no-frpc`，`error` 里写着该放到哪里。

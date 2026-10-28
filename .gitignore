@@ -28,3 +28,5 @@ lib/index.bugcheck.js
 
 __pycache__/
 *.pyc
+# 安装包产物（用 tools/make-installer.mjs 现做，不进仓库）
+dist/
