@@ -336,11 +336,11 @@ async function newCode() {
 function renderSlots(data) {
   const portNode = $('chan-port')
   if (!portNode) return
-  if (!data.slot || !data.port) {
-    portNode.textContent = data.state === 'pending' ? '登记中…' : '未登记'
+  if (!data.port) {
+    portNode.textContent = data.state === 'pending' || data.state === 'claiming' ? '登记中…' : '未登记'
     return
   }
-  portNode.textContent = `第 ${data.slot} 号 · 端口 ${data.port}`
+  portNode.textContent = `端口 ${data.port}`
 }
 
 function renderStatus(data, message) {
