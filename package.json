@@ -16,10 +16,12 @@
     "lib",
     "web",
     "locale",
+    "tools",
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
-    "z-reload-flag.txt"
+    "INSTALL.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
