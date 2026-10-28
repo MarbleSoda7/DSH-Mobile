@@ -325,8 +325,9 @@ class Handler(BaseHTTPRequestHandler):
         with _lock:
             entry = _state["routes"].get(token) if token else None
             if not entry:
-                self._send(200, {"reject": False, "unchange": True,
-                                 "reject_reason": "" if token else "缺少 token"})
+                # 认不出 token 就不能放行，否则谁都能拿我们的 frps 开端口。
+                self._send(200, {"reject": True, "unchange": True,
+                                 "reject_reason": "未登记" if token else "缺少 token"})
                 return
             now = _now_ms()
             entry["seen"] = now
