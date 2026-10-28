@@ -1376,17 +1376,15 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T37 再翻页不收回用户展开的历史轮', oldWraps.every((n) => !n.classList.contains('ev-stowed')), JSON.stringify(oldWraps.map((n) => n.className)))
 }
 
-/* T38 长按发送键插话要有触感反馈（用户 m01631）。 */
+/* T38 长按发送键触发插话时短震一下（用户 m01631 / m01725：只要这一下，不要别的花样）。 */
 {
   navigator.vibrateCalls = []
-  const okSteer = app.haptic('steer')
-  check('T38 插话触感返回成功', okSteer === true, String(okSteer))
-  check('T38 插话用的是双短震节奏', Array.isArray(navigator.vibrateCalls[0]) && navigator.vibrateCalls[0].length === 3, JSON.stringify(navigator.vibrateCalls[0]))
-  app.haptic('fail')
-  check('T38 失败用另一种节奏区分', Array.isArray(navigator.vibrateCalls[1]) && navigator.vibrateCalls[1][0] === 30, JSON.stringify(navigator.vibrateCalls[1]))
+  const okVibrate = app.haptic()
+  check('T38 触感调用成功', okVibrate === true, String(okVibrate))
+  check('T38 单次短震（15ms）', navigator.vibrateCalls.length === 1 && navigator.vibrateCalls[0] === 15, JSON.stringify(navigator.vibrateCalls))
   check('T38 没有 Vibration API 时安静跳过（iOS）', source.includes("typeof nav.vibrate !== 'function'"))
-  check('T38 长按路径确实调了触感', /longPressed = true\s*\n\s*haptic\('steer'\)/.test(source))
-  check('T38 排队条 ↑ 插话也有同样触感', /action === 'steer'\) haptic\('steer'\)/.test(source))
+  check('T38 长按路径确实调了触感', /longPressed = true\s*\n\s*haptic\(\)/.test(source))
+  check('T38 别的入口没有加震动', (source.match(/haptic\(/g) || []).length === 2, String((source.match(/haptic\(/g) || []).length))
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')

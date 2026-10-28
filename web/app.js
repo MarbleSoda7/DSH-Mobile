@@ -2710,9 +2710,6 @@ async function queueAction(item, action, text) {
     touchQueue(sessionId, item.itemId, { removed: true })
   }
   const optimisticSeq = action === 'steer' ? -Date.now() : 0
-  // 排队条里的 ↑ 也是插话，触感反馈要一致（用户 m01631 说的是"长按发送键"，
-  // 但同一个动作两条入口，手感不该分叉）。
-  if (action === 'steer') haptic('steer')
   if (action === 'steer') {
     // 插话后立刻出现的"你"气泡也要能看出带了图（本地没有 base64，只有张数）。
     const imageCount = Number(item.imageCount) || 0
@@ -2922,7 +2919,6 @@ async function steerNow() {
   if ((!text && state.attachments.length === 0) || !state.current) return
   const sessionId = state.current
   if (!(state.turnOpen.get(sessionId) === true || state.running.get(sessionId) === true)) {
-    haptic('fail')
     toast('当前没有正在执行的回合，直接发送即可')
     return
   }
@@ -2937,18 +2933,14 @@ async function steerNow() {
  */
 const STEER_HOLD_MS = 500
 
-/* 触感反馈（用户 m01631：长按发送键插话时震动一下）。
- * Android 的 navigator.vibrate 在系统浏览器 / Chrome / 夸克里基本都能用；
- * iOS Safari **没有** Vibration API，这里只能安静地什么都不做——
- * 网上那些用 <input switch> 骗触感的 hack 早已失效，不要加。
- * 返回值只用来让测试能断言"确实调了"，业务上忽略即可。 */
-function haptic(kind = 'steer') {
+/* 触感反馈（用户 m01631 / m01725）：只做一件事——长按发送键真的触发插话时，短震一下。
+ * 不加别的音效/节奏区分/失败提示，用户明确要求"就这一下"。
+ * iOS Safari 没有 Vibration API，检测不到就安静跳过（网上骗触感的 hack 早已失效）。 */
+function haptic() {
   const nav = typeof navigator === 'undefined' ? null : navigator
   if (!nav || typeof nav.vibrate !== 'function') return false
-  // 插话是"双短震"，比单一下更像"已切换成插话"；失败用"长-短"区分。
-  const pattern = kind === 'fail' ? [30, 60, 12] : [14, 46, 20]
   try {
-    return nav.vibrate(pattern)
+    return nav.vibrate(15)
   } catch {
     return false
   }
@@ -2971,7 +2963,7 @@ function bindSendButton() {
     timer = setTimeout(() => {
       timer = 0
       longPressed = true
-      haptic('steer')
+      haptic()
       steerNow()
     }, STEER_HOLD_MS)
   })
