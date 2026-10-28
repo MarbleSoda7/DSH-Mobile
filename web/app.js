@@ -55,6 +55,7 @@ const state = {
   older: new Map(),
   loadingOlder: new Set(),
   olderDone: new Set(),
+  olderStuck: new Set(),
   // 每会话"这一页已经加载过了、要等用户滚离顶部才允许再加载"的门闩。
   // 没有它时，内容不足一屏会在一次滑动里连续翻掉十几页（流量和卡顿都受不了）。
   olderArmed: new Map(),
@@ -1751,6 +1752,7 @@ async function loadLatest(sessionId) {
 // 撞到空页时用更大的页重试一次，而不是就此判定"到底了"。
 const OLDER_PAGE = 1
 const OLDER_PAGE_RETRY = 9
+const OLDER_PAGE_BIG = 40
 
 async function loadOlder(sessionId) {
   if (!sessionId || sessionId !== state.current) return
@@ -1779,15 +1781,21 @@ async function loadOlder(sessionId) {
     hint.className = 'older-loading'
     hint.textContent = '正在加载更早的记录…'
     box.insertBefore(hint, box.firstChild)
-    // 先按小页取；如果落在轮边界上拿回空页，用更大的页重试一次。
+    // 先按小页取；如果落在轮边界上拿回空页，用更大的页重试。
     // 不做这个自愈的话，用户在某个位置滑到顶就再也翻不动了。
+    // 第三档 40 是给"宿主按轮切分、小页正好落在空轮上"的兜底。
     let page = null
     const added = []
     let hasMore = false
-    for (const limit of [OLDER_PAGE, OLDER_PAGE_RETRY]) {
+    let served = 0
+    let servedMin = 0
+    for (const limit of [OLDER_PAGE, OLDER_PAGE_RETRY, OLDER_PAGE_BIG]) {
       page = await api(`/api/session/${encodeURIComponent(sessionId)}/page?limit=${limit}&before=${oldest}`)
       const events = page.events || []
+      served = events.length
+      servedMin = 0
       for (const event of events) {
+        if (typeof event.seq === 'number' && (servedMin === 0 || event.seq < servedMin)) servedMin = event.seq
         if (typeof event.seq !== 'number' || event.seq >= oldest) continue
         if (state.events.has(event.seq)) continue
         state.events.set(event.seq, event)
@@ -1799,6 +1807,7 @@ async function loadOlder(sessionId) {
     }
     state.older.set(sessionId, hasMore)
     if (sessionId !== state.current) return
+    let repaired = false
     if (added.length > 0) {
       // 先把"正在加载"那行摘掉，再往顶部插新内容，避免它夹在旧内容中间。
       if (hint) hint.remove()
@@ -1821,11 +1830,27 @@ async function loadOlder(sessionId) {
       // 拿回来的事件全都在 state.events 里了，但屏幕上没有——说明之前某次插入半路失败，
       // 事件被记进了内存却没渲染出来。这时不能静默收场（用户看到的就是"提示一闪，什么也没加载出来"），
       // 整表重建一次把缺失的内容补上。
+      const rowsBefore = box.children.length
       reflow()
+      repaired = box.children.length > rowsBefore
       const grew = box.scrollHeight - prevHeight
       box.scrollTop = prevTop + Math.max(0, grew)
     }
-    if (added.length === 0 || hasMore !== true) noteOlderDone(sessionId, added.length === 0)
+    if (added.length === 0) {
+      if (repaired) {
+        // 已经把这页内容补回屏幕了，就当这一页成功。
+        state.olderArmed.set(sessionId, true)
+      } else if (oldest <= 1 || (served === 0 && !hasMore)) {
+        noteOlderDone(sessionId)
+      } else {
+        // 拿到了事件但全是本地已有的 / 服务端返回空页却说还有更早的：
+        // 既不能记成"到底了"（否则永远翻不动），也不能静默。
+        state.olderArmed.set(sessionId, true)
+        noteOlderStuck(sessionId, `返回 ${served} 条，最早 seq=${servedMin || '无'}，本地最早 seq=${oldest}，hasMore=${hasMore}`)
+      }
+    } else if (hasMore !== true) {
+      noteOlderDone(sessionId)
+    }
   } catch (error) {
     // 翻页失败不能静默：以前异常会一路冒到滚动事件里，用户只看到"提示一闪"，再滑也翻不动。
     console.warn('loadOlder failed', error && error.message)
@@ -1878,16 +1903,32 @@ function prependOlder(events) {
 }
 
 // 翻到头了给一行提示（只画一次，避免每次上滑都重复）。
-function noteOlderDone(sessionId, silent = false) {
+function noteOlderDone(sessionId) {
   if (state.olderDone.has(sessionId)) return
   state.olderDone.add(sessionId)
-  if (silent || sessionId !== state.current) return
+  if (sessionId !== state.current) return
   const box = $('transcript')
   const note = document.createElement('div')
   note.className = 'divider'
   note.textContent = '— 已经是全部记录了 —'
   box.insertBefore(note, box.firstChild)
   box.scrollTop = 0
+}
+
+// 翻页"什么也没拿到、但也说不清是不是到底了"（宿主分页边界 / 服务端没按 before 过滤）。
+// 关键：**不能**记进 olderDone，否则这一页会永远翻不动；也不能静默。
+// 把现场数字直接摆在时间线顶部，既是给用户的交代，也是排查用的证据。
+function noteOlderStuck(sessionId, detail) {
+  if (state.olderStuck.has(sessionId)) return
+  state.olderStuck.add(sessionId)
+  if (sessionId !== state.current) return
+  const box = $('transcript')
+  const note = document.createElement('div')
+  note.className = 'divider'
+  note.textContent = `— 更早的记录没取到：${detail} —`
+  box.insertBefore(note, box.firstChild)
+  box.scrollTop = 0
+  toast('更早的记录没取到，已把原因显示在时间线顶部')
 }
 
 function reflow() {

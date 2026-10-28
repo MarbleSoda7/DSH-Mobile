@@ -1461,6 +1461,41 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T40 内容被补回时间线', text40.some((text) => text.includes('旧回答 90')) && text40.some((text) => text.includes('旧回答 100')), JSON.stringify(text40))
 }
 
+/* T42 服务端返回空页却说还有更早的（宿主分页边界）：不能记成"到底了"，必须把原因摆出来。 */
+{
+  reset()
+  const box42 = document.getElementById('transcript')
+  for (const event of [
+    { type: 'turn/start', seq: 100, time: 1000, sessionId: 'sess-A', data: {} },
+    { type: 'assistant/message', seq: 101, time: 1001, sessionId: 'sess-A', data: { message: { role: 'assistant', content: [{ type: 'text', text: '最新回答' }] } } },
+  ]) app.handleFrame('event', event)
+  pageHandler = () => ({ ok: true, events: [], latestSeq: 101, hasMore: true })
+  app.state.olderArmed.set('sess-A', true)
+  app.state.olderDone.delete('sess-A')
+  await app.loadOlder('sess-A')
+  const text42 = timelineText()
+  check('T42 没取到时给出可见提示', text42.some((text) => text.includes('更早的记录没取到')), JSON.stringify(text42))
+  check('T42 提示里带上现场数字', text42.some((text) => text.includes('本地最早 seq=100')), JSON.stringify(text42))
+  check('T42 不把会话标成到底', app.state.olderDone.has('sess-A') === false)
+  check('T42 下一次还能再翻', app.state.olderArmed.get('sess-A') === true)
+
+  // 修好服务端之后同一会话必须能正常翻回来（不能因为出过一次错就永久失效）。
+  pageHandler = () => ({
+    ok: true,
+    events: [
+      { type: 'turn/start', seq: 90, time: 900, sessionId: 'sess-A', data: {} },
+      { type: 'assistant/message', seq: 91, time: 901, sessionId: 'sess-A', data: { message: { role: 'assistant', content: [{ type: 'text', text: '更早的回答' }] } } },
+    ],
+    latestSeq: 101,
+    hasMore: false,
+  })
+  await app.loadOlder('sess-A')
+  check('T42 之前失败过的会话仍能翻出更早记录', timelineText().some((text) => text.includes('更早的回答')), JSON.stringify(timelineText()))
+  check('T42 这次拿到内容后才标到底', app.state.olderDone.has('sess-A') === true)
+  check('T42 到底了才出现全部记录提示', timelineText().some((text) => text.includes('已经是全部记录了')))
+  void box42
+}
+
 /* T41 单条事件渲染失败不能拖垮整页，也不能把这一页永久标成"已加载"。 */
 {
   const source41 = readFileSync(sourcePath, 'utf8')
