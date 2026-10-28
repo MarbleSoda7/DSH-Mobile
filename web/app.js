@@ -363,6 +363,7 @@ function imageNode(attachment) {
     thumb.alt = attachment?.name || '图片'
     thumb.src = attachment.previewUrl
     preview.appendChild(thumb)
+    preview.onclick = () => openImageViewer(thumb.src, thumb.alt)
     return preview
   }
   const hash = attachmentHash(attachment)
@@ -377,7 +378,13 @@ function imageNode(attachment) {
   if (attachment?.width) img.width = attachment.width
   if (attachment?.height) img.height = attachment.height
   wrap.appendChild(img)
-  wrap.onclick = () => window.open(img.src, '_blank')
+  wrap.onclick = () => {
+    if (!img.src) {
+      toast('图片还在加载…')
+      return
+    }
+    openImageViewer(img.src, img.alt)
+  }
   // 图片是异步取回来的 blob，加载完成时高度才真正确定。若用户本来就在底部，
   // 要把视野跟着推到底，否则最后一张图会把"最新一条"顶出屏幕（进会话时尤其明显）。
   img.onload = () => {
@@ -399,6 +406,240 @@ function pendingFigureNode(count, hint = '图片') {
   wrap.textContent = `🖼 ${hint} ${count} 张`
   return wrap
 }
+
+/* 全屏看图。
+ * 以前点缩略图是 window.open(img.src)：img.src 是 fetch 回来的 blob: URL，
+ * 手机浏览器（夸克/Chrome Android）不肯在新标签里渲染它，点了就是一片白，
+ * 于是"图片点开显示不出大图"。这里改成页内浮层，同源同文档，blob 直接用。
+ * 手势：双指缩放 / 双击放大 / 放大后拖动 / 下滑关闭 / 返回键关闭。 */
+let imageViewer = null
+
+function openImageViewer(url, name = '图片') {
+  if (!url) return
+  // 已经开着一张（用户快速点了两张图）：直接换内容，不要再压一条历史，
+  // 否则上一条历史退回来时会把新开的那张一起关掉。
+  let reuseHistory = false
+  if (imageViewer) {
+    try { imageViewer.root.remove() } catch {}
+    imageViewer = null
+    reuseHistory = true
+  }
+
+  const root = document.createElement('div')
+  root.className = 'img-viewer'
+  const img = document.createElement('img')
+  img.className = 'img-viewer-img'
+  img.src = url
+  img.alt = name
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'img-viewer-close'
+  close.textContent = '✕'
+  close.setAttribute('aria-label', '关闭')
+  const hint = document.createElement('div')
+  hint.className = 'img-viewer-hint'
+  hint.textContent = '双指缩放 · 双击放大 · 下滑关闭'
+  root.append(img, close, hint)
+  const host = $('app') || document.body
+  host.appendChild(root)
+
+  // 缩放/平移状态。scale=1 时是"整图适配屏幕"，此时不允许拖动。
+  let scale = 1
+  let baseScale = 1
+  let tx = 0
+  let ty = 0
+  // 关掉浮层时把页面滚动位置还回去：不用 body 锁滚动，
+  // 只锁 #transcript 的 touch-action 会把回弹一起锁死。
+  const scroller = $('transcript')
+  const scrollTop = scroller ? scroller.scrollTop : 0
+
+  const apply = () => {
+    // 平移范围按"放大后真正溢出的那一半"算：未放大时一格都不许拖。
+    if (scale <= 1.01) {
+      tx = 0
+      ty = 0
+    } else {
+      const maxX = Math.max(0, (img.clientWidth * scale - root.clientWidth) / 2)
+      const maxY = Math.max(0, (img.clientHeight * scale - root.clientHeight) / 2)
+      tx = Math.min(maxX, Math.max(-maxX, tx))
+      ty = Math.min(maxY, Math.max(-maxY, ty))
+    }
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`
+  }
+  const reset = (animate) => {
+    scale = 1
+    tx = 0
+    ty = 0
+    img.style.transition = animate ? 'transform 160ms ease-out' : ''
+    apply()
+    if (animate) setTimeout(() => { img.style.transition = '' }, 180)
+  }
+
+  // ---- 触摸：单指拖动 / 双指缩放 / 下滑关闭 ----
+  let mode = ''
+  let startDist = 0
+  let startScale = 1
+  let startX = 0
+  let startY = 0
+  let startTx = 0
+  let startTy = 0
+  let lastTapAt = 0
+  let dragClose = false
+
+  const point = (touch) => ({ x: touch.clientX, y: touch.clientY })
+
+  const onStart = (event) => {
+    if (event.touches.length === 2) {
+      mode = 'pinch'
+      const [a, b] = [point(event.touches[0]), point(event.touches[1])]
+      startDist = Math.hypot(a.x - b.x, a.y - b.y) || 1
+      startScale = scale
+      dragClose = false
+      return
+    }
+    if (event.touches.length !== 1) return
+    const p = point(event.touches[0])
+    mode = scale > 1.01 ? 'pan' : 'swipe'
+    startX = p.x
+    startY = p.y
+    startTx = tx
+    startTy = ty
+    dragClose = false
+  }
+
+  const onMove = (event) => {
+    if (mode === 'pinch' && event.touches.length === 2) {
+      event.preventDefault()
+      const [a, b] = [point(event.touches[0]), point(event.touches[1])]
+      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1
+      scale = Math.min(8, Math.max(1, startScale * (dist / startDist)))
+      if (scale <= 1.01) { tx = 0; ty = 0 }
+      apply()
+      return
+    }
+    if (event.touches.length !== 1) return
+    const p = point(event.touches[0])
+    const dx = p.x - startX
+    const dy = p.y - startY
+    if (mode === 'pan') {
+      event.preventDefault()
+      tx = startTx + dx
+      ty = startTy + dy
+      apply()
+      return
+    }
+    // 未放大时：下滑关闭。只认纵向位移，避免左右滑时误关。
+    if (mode === 'swipe' && dy > 0 && Math.abs(dy) > Math.abs(dx)) {
+      event.preventDefault()
+      dragClose = true
+      root.style.background = `rgba(4, 6, 10, ${Math.max(0.35, 0.95 - dy / 520)})`
+      img.style.transform = `translate(0, ${dy}px) scale(${Math.max(0.72, 1 - dy / 1400)})`
+    }
+  }
+
+  const onEnd = (event) => {
+    if (mode === 'pinch') {
+      mode = ''
+      if (scale <= 1.01) reset(true)
+      else apply()
+      return
+    }
+    if (mode === 'swipe') {
+      const touch = event.changedTouches && event.changedTouches[0]
+      const dy = touch ? touch.clientY - startY : 0
+      const dt = touch ? touch.clientX - startX : 0
+      mode = ''
+      if (dragClose && dy > 90 && Math.abs(dy) > Math.abs(dt)) {
+        closeImageViewer()
+        return
+      }
+      if (dragClose) {
+        root.style.background = 'rgba(4, 6, 10, 0.95)'
+        reset(true)
+        return
+      }
+      // 双击放大 / 复原
+      if (touch && Math.abs(dy) < 12 && Math.abs(dt) < 12) {
+        const stamp = Date.now()
+        if (stamp - lastTapAt < 300) {
+          lastTapAt = 0
+          if (scale > 1.01) reset(true)
+          else {
+            scale = 2.5
+            tx = 0
+            ty = 0
+            img.style.transition = 'transform 160ms ease-out'
+            apply()
+            setTimeout(() => { img.style.transition = '' }, 180)
+          }
+        } else lastTapAt = stamp
+      }
+      dragClose = false
+      return
+    }
+    mode = ''
+    dragClose = false
+  }
+
+  root.addEventListener('touchstart', onStart, { passive: true })
+  root.addEventListener('touchmove', onMove, { passive: false })
+  root.addEventListener('touchend', onEnd)
+  root.addEventListener('touchcancel', onEnd)
+
+  // 桌面浏览器 / 鼠标：滚轮缩放，点击空白处关闭。
+  // 触屏上单指 tap 之后浏览器还会补一个 click —— 不挡掉的话，手机上第一次点图
+  // 就会被这个 click 立刻关掉（看起来"点开没反应"）。
+  let lastTouchAt = 0
+  root.addEventListener('touchstart', () => { lastTouchAt = Date.now() }, { passive: true })
+  root.addEventListener('wheel', (event) => {
+    event.preventDefault()
+    scale = Math.min(8, Math.max(1, scale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)))
+    if (scale <= 1.01) { tx = 0; ty = 0 }
+    apply()
+  }, { passive: false })
+  root.addEventListener('click', (event) => {
+    if (Date.now() - lastTouchAt < 700) return
+    if (event.target === root || event.target === img) closeImageViewer()
+  })
+  close.onclick = (event) => {
+    event.stopPropagation()
+    closeImageViewer()
+  }
+
+  // 安卓返回键：压一条历史，popstate 时关掉浮层。
+  // 换图复用时那条历史还在，所以仍然按"有历史可退"处理，只是不再压新的。
+  try {
+    if (!reuseHistory) history.pushState({ imageViewer: 1 }, '')
+    imageViewer = { root, pop: true }
+  } catch {
+    imageViewer = { root, pop: false }
+  }
+  imageViewer.scrollTop = scrollTop
+  imageViewer.scroller = scroller
+}
+
+function closeImageViewer() {
+  const current = imageViewer
+  if (!current) return
+  imageViewer = null
+  try { current.root.remove() } catch {}
+  // 返回键关闭时历史已经被 popstate 弹回，这里不要再退一次，否则会退出页面。
+  if (current.pop && !current.popped) {
+    current.popped = true
+    try { history.back() } catch {}
+  }
+  if (current.scroller && typeof current.scrollTop === 'number') {
+    current.scroller.scrollTop = current.scrollTop
+  }
+}
+
+window.addEventListener('popstate', () => {
+  const current = imageViewer
+  if (!current) return
+  imageViewer = null
+  current.popped = true
+  try { current.root.remove() } catch {}
+})
 
 /* ------------------------------------------------ attachments (image upload) */
 
@@ -432,6 +673,7 @@ function renderAttachments() {
     img.className = 'attach-thumb'
     img.src = item.url
     img.alt = item.name || '图片'
+    img.onclick = () => openImageViewer(img.src, img.alt)
     cell.appendChild(img)
     const remove = document.createElement('button')
     remove.className = 'attach-remove'
