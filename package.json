@@ -17,6 +17,7 @@
     "web",
     "locale",
     "tools",
+    "deploy/pc",
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
