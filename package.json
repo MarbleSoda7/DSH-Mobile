@@ -18,7 +18,8 @@
     "locale",
     "cordis.patch.yml",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "z-reload-flag.txt"
   ],
   "dsh": {
     "bundle": {
