@@ -1,82 +1,118 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>DSH 服务器授权说明（模板）</title>
-<style>
-  body { font: 15px/1.8 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 40px auto; max-width: 760px; color: #222; }
-  code { background: #f2f2f2; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
-  pre { background: #f7f7f7; border: 1px solid #e2e2e2; border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 13px; }
-  .warn { background: #fff4f4; border-left: 4px solid #d33; padding: 12px 16px; border-radius: 6px; }
-  h1 { font-size: 20px; }
-  h2 { font-size: 16px; margin-top: 28px; }
-</style>
-</head>
-<body>
-<h1>DSH 手机接管插件：服务器 SSH 授权说明</h1>
+# 服务端安全说明
 
-<div class="warn">
-  <b>先说清楚风险。</b>
-  这台插件的服务器地址和 SSH 密钥是公开在仓库里的，所以服务器上必须把它降成
-  <b>只能做端口转发、不能执行任何命令</b>的账号。按下面的配置做完之前，
-  任何人 clone 这个仓库都能拿到你服务器的 root 交互 shell。
-</div>
+这是「DSH Mobile Remote」服务端（`8.152.5.127`）的部署与安全边界说明。
 
-<h2>1. 改 sshd：禁止 root 登录</h2>
-<p>编辑 <code>/etc/ssh/sshd_config</code>，把</p>
-<pre>PermitRootLogin yes</pre>
-<p>改成</p>
-<pre>PermitRootLogin prohibit-password</pre>
-<p>如果你有别的账号要登录服务器，就干脆写 <code>PermitRootLogin no</code>，只用普通账号运维。改完 <code>systemctl reload sshd</code>。</p>
+## 先明确一件事：没有 SSH 了
 
-<h2>2. 给插件键加限制（关键）</h2>
-<p>
-  插件用的公钥写死带注释 <code>dsh-mobile-remote</code>。<b>每台电脑用的都是同一把</b>，
-  所以它天生就是个共享秘密，必须收窄到只剩转发。把这一行加/改成：
-</p>
-<pre>restrict,port-forwarding,command="/usr/sbin/nologin" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBkIQtubpVlY6vggY9dixD2Cv5UMvte4x/Z+Iq3WgBxY dsh-mobile-remote</pre>
-<p>
-  <code>restrict</code> 会关掉 pty、agent 转发、X11 转发、端口监听的协商，<code>port-forwarding</code>
-  再把转发单独放回来；<code>command=</code> 让这条键连「执行一条命令」都不行。结果就是：
-  <b>能开隧道，但拿不到任何 shell，也读不了任何文件</b>。
-</p>
-<p>服务端还需要保留 <code>GatewayPorts clientspecified</code>，否则 <code>-R 0.0.0.0:端口</code> 起不来。</p>
+早期版本用 SSH 反向隧道，那时候**仓库里公开着一把共享 ed25519 部署密钥**——谁 clone 到这个仓库，谁就能拿它连服务器。那是个严重的问题，已经彻底删掉了：
 
-<h2>3. 每台电脑发自己的密钥（根治，推荐）</h2>
-<p>
-  共享密钥无法吊销单台设备——你知道谁泄露都收不回来。正确做法是每台电脑自己生成一对，
-  你手动把它的公钥加到服务器，并删除仓库里那把共享键：
-</p>
-<pre>
-# 电脑上
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/dsh_mobile_remote_ed25519
+- 仓库里的 `deploy/pc/*_ed25519` 已删除
+- 服务器 `/root/.ssh/authorized_keys` 里对应的行已删除
+- 客户端不再执行任何 `ssh`，改成纯 Node 的 WebSocket 隧道（`lib/tunnel.js`）
 
-# 服务器上（把 &lt;那台电脑的公钥&gt; 换成它 .pub 的内容）
-echo 'restrict,port-forwarding,command="/usr/sbin/nologin" &lt;那台电脑的公钥&gt; dsh-mr-&lt;机器名&gt;' >> /root/.ssh/authorized_keys
-</pre>
-<p>这样哪台机器出了事，删掉它那一行就行，其他机器不受影响。</p>
+**现在插件里没有一个可执行文件，也没有一把共享密钥。** 下面讲的是当前实际架构。
 
-<h2>4. 不要用 root 跑转发</h2>
-<p>
-  建议建一个普通账号 <code>mr-tunnel</code>，只用来开隧道；<code>authorized_keys</code> 里这条公钥
-  放到那个账号下，并把插件配置里的 <code>tunnel.user</code> 改成它。
-</p>
+## 当前架构
 
-<h2>5. 转发端口同样要限</h2>
-<p>
-  <code>restrict</code> 管不住「转发到哪个目标端口」。能连上 127.0.0.1:7790 就等于能调用分配接口，
-  能连 127.0.0.1:6379 就等于能操作 Redis。服务器上用 <code>PermitOpen</code> 把目标钉死：
-</p>
-<pre>restrict,port-forwarding,command="/usr/sbin/nologin",permitopen="127.0.0.1:7788",permitopen="127.0.0.1:7790" ssh-ed25519 ... dsh-mobile-remote</pre>
+```
+手机 ──> 8.152.5.127:9000-9099 ──┐
+                                 ├─> 服务器 TunnelServer（127.0.0.1:7791）
+插件 ──> 8.152.5.127:7789 ───────┘         │
+   └─ /api/*    → 127.0.0.1:7790（分配接口）│
+   └─ /tunnel   → 127.0.0.1:7791（隧道服务）│
+                                            ▼
+                                    你的电脑 127.0.0.1:7788
+```
 
-<h2>6. 检查清单</h2>
-<pre>
-# 确认拿到的是 shell 还是被拒绝
-ssh -i ~/.ssh/dsh_mobile_remote_ed25519 root@你的服务器 echo hi
-# 期望：/usr/sbin/nologin 或拒绝执行
+服务器对公网只开 **两个** 端口段：
 
-# 确认只开了隧道也能用
-ssh -N -R 0.0.0.0:9000:127.0.0.1:7788 root@你的服务器
-</pre>
-</body>
-</html>
+| 端口 | 用途 | 谁能连 |
+| --- | --- | --- |
+| `7789` | 分配接口 + 隧道控制通道 | 公网 |
+| `9000`–`9099` | 用户电脑的对外入口 | 公网 |
+
+`7790` / `7791` 只监听 `127.0.0.1`，公网连不到。
+
+## 认证模型
+
+### 端口分配（`/api/claim`）
+
+第一次报到不带 `deviceId`，服务器发一套新的：
+
+```json
+{"deviceId": "dev_...", "secret": "...", "token": "...", "port": 9000}
+```
+
+之后每次都带 `deviceId + secret` 来续约。`secret` 存在客户端 `<stateDir>/identity.json` 里，服务器侧存明文（本地台账，不是公网服务）。
+
+### 隧道握手（`/tunnel`）
+
+控制通道建好后客户端发 `{"t":"hello","token":...,"port":...}`，服务器校验 `token → port` 映射，不匹配直接回 `{"t":"error","msg":"token 无权占用端口 X"}` 并断开。
+
+**这里不做「服务器发起连接」**，所以拿到 token 的人只能占用自己那个端口，开不出别人的。
+
+### 手机侧
+
+设备令牌 = `<id>.<32 字节 hex>`，服务端只存 `sha256`。配对码只能从回环地址生成、2 分钟有效、一次即焚。
+
+## 部署步骤
+
+```bash
+# 1. 上传服务端文件
+scp deploy/vps/{api.py,tunnel.py,Caddyfile,dsh-gateway.service} root@服务器:/opt/dsh-gateway/
+scp deploy/vps/Caddyfile root@服务器:/etc/caddy/Caddyfile
+scp deploy/vps/dsh-gateway.service root@服务器:/etc/systemd/system/
+
+# 2. 装依赖（只用 Python 标准库）
+apt install -y python3 caddy
+
+# 3. 起服务
+mkdir -p /var/lib/dsh-gateway
+echo '{"machines":[],"routes":{}}' > /var/lib/dsh-gateway/api.json
+systemctl daemon-reload
+systemctl enable --now dsh-gateway
+systemctl restart caddy
+```
+
+### 云安全组
+
+必须放行：
+
+- `7789` —— 分配接口 + 隧道控制
+- `9000-9099` —— 用户入口（**端口段写法**，不要一条条列单端口）
+
+### 端口池配置
+
+`dsh-gateway.service` 里的环境变量：
+
+```ini
+Environment=DSH_API_PORT_BASE=9000
+Environment=DSH_API_PORT_STEP=1
+Environment=DSH_API_SLOTS=100
+Environment=DSH_API_PUBLIC_PORT_MAX=9099
+Environment=DSH_API_RECLAIM_IDLE=604800
+```
+
+`PORT_BASE + (SLOTS-1)*STEP` 超过 `PUBLIC_PORT_MAX` 时**服务直接启动失败**——这是故意的，防止发出一个安全组根本没开的端口，让接进来的机器永远连不上。
+
+`DSH_API_RECLAIM_IDLE` 是端口回收线（秒），默认 7 天。
+
+## 威胁模型
+
+| 攻击者想干什么 | 能不能做到 |
+| --- | --- |
+| 用别人的地址访问别人的电脑 | 不能。每个端口只对持有对应 token 的控制通道开放 |
+| 拿到 root shell | 不能。没有 SSH，只有隧道协议 |
+| 扫端口发现 DSH | 不能。未带设备 cookie 的 `/` 返回 404 |
+| 抢别人的端口 | 不能。端口跟 `deviceId` 绑定，7 天不露面才回收 |
+| 伪造 `deviceId` 抢端口 | 不能。要同时有 `secret` |
+| **服务端维护者**看你的流量 | **能**。隧道是明文 WebSocket，中间人可见 |
+
+最后一条说清楚：这套东西**不提供端到端加密**。HTTP 明文在服务器上可以被抓包。它解决的问题是「在外面也能用手机接管 DSH」，不是「防止服务器看你」。
+
+## 已知风险
+
+1. **单点**。服务器挂了，所有手机的二维码地址都失效。插件自己是好的，但公网入口没了。
+2. **明文**。见上。
+3. **台账手工维护的风险**。`/var/lib/dsh-gateway/api.json` 被重置之后，所有已安装机器会在下次重连时自动重新 claim 新身份，端口可能变——手机上旧二维码要重新扫。客户端会自愈，但用户需要知道这件事。
+4. **没有速率限制**。`/api/claim` 可以被刷，池子会被占满。目前靠池子大小（100）挡着。
