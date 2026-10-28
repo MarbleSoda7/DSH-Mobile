@@ -13,7 +13,7 @@
  * v24：用户亲手展开的过程行不再被后续事件收回；排队消息编辑态不被队列刷新重画。
  * v25：上滑加载更早记录不再跨轮收集过程行，历史过程行默认收起。
  * v26：长按发送键触发插话时短震一下。 */
-const SHELL = 'dsh-mobile-shell-v26'
+const SHELL = 'dsh-mobile-shell-v27'
 const FILES = ['/', '/index.html', '/app.js', '/style.css', '/icon.svg', '/manifest.webmanifest']
 // 入口资源必须"先要网络"：装成 PWA 后只靠缓存回退，永远看不到修复后的代码。
 const NETWORK_FIRST = new Set(['/', '/index.html', '/app.js', '/style.css'])

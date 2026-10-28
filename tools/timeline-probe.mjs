@@ -1387,6 +1387,88 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T38 别的入口没有加震动', (source.match(/haptic\(/g) || []).length === 2, String((source.match(/haptic\(/g) || []).length))
 }
 
+/* T39 真实形态的历史页（含 turn/start、思考、工具行、正文、turn/end）翻页后必须真的显示出来。 */
+{
+  reset()
+  const box39 = document.getElementById('transcript')
+  const seed = (seq) => [
+    { type: 'turn/start', seq: seq, time: seq * 10, sessionId: 'sess-A', data: {} },
+    { type: 'assistant/message', seq: seq + 1, time: seq * 10 + 5, sessionId: 'sess-A', data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: '想一想' }] } } },
+    { type: 'tool/call', seq: seq + 2, time: seq * 10 + 8, sessionId: 'sess-A', data: { name: 'pwsh', arguments: '{"command":"x"}', summary: { kind: 'cmd', verb: '运行命令', target: 'x' } } },
+    { type: 'user/message', seq: seq + 3, time: seq * 10 + 9, sessionId: 'sess-A', data: { role: 'user', content: [{ type: 'text', text: '旧问题 ' + seq }] } },
+    { type: 'assistant/message', seq: seq + 4, time: seq * 10 + 20, sessionId: 'sess-A', data: { message: { role: 'assistant', content: [{ type: 'text', text: '旧回答 ' + seq }] } } },
+    { type: 'turn/end', seq: seq + 5, time: seq * 10 + 30, sessionId: 'sess-A', data: {} },
+  ]
+  for (const event of seed(100)) app.handleFrame('event', event)
+  check('T39 先有一轮完整历史', timelineText().some((text) => text.includes('旧回答 100')), JSON.stringify(timelineText()))
+
+  pageHandler = () => ({ ok: true, events: seed(90), latestSeq: 105, hasMore: false })
+  let caught = null
+  try {
+    await app.loadOlder('sess-A')
+  } catch (error) {
+    caught = error
+  }
+  check('T39 翻页不抛错', caught === null, caught && (caught.message + ' | ' + (caught.stack || '').split('\n')[1]))
+  const text39 = timelineText()
+  check('T39 更早的用户消息显示出来了', text39.some((text) => text.includes('旧问题 90')), JSON.stringify(text39))
+  check('T39 更早的回答显示出来了', text39.some((text) => text.includes('旧回答 90')), JSON.stringify(text39))
+  check('T39 原来那一轮还在', text39.some((text) => text.includes('旧回答 100')), JSON.stringify(text39))
+  check('T39 回填的过程行默认收起', box39.children.filter((node) => node.classList && node.classList.contains('ev-wrap')).every((node) => node.classList.contains('ev-stowed')), JSON.stringify(box39.children.map((node) => node.className)))
+}
+
+/* T40 上一次翻页半路失败（事件进了内存、没进 DOM）时，再滑一次必须把内容补回来。
+   用户 m01785/m01792 的现象就是"有正在加载的提示，提示完什么也没显示"。 */
+{
+  const seed40 = (seq) => [
+    { type: 'turn/start', seq: seq, time: seq * 10, sessionId: 'sess-A', data: {} },
+    { type: 'user/message', seq: seq + 3, time: seq * 10 + 9, sessionId: 'sess-A', data: { role: 'user', content: [{ type: 'text', text: '旧问题 ' + seq }] } },
+    { type: 'assistant/message', seq: seq + 4, time: seq * 10 + 20, sessionId: 'sess-A', data: { message: { role: 'assistant', content: [{ type: 'text', text: '旧回答 ' + seq }] } } },
+  ]
+  reset()
+  const box40 = document.getElementById('transcript')
+  for (const event of seed40(100)) app.handleFrame('event', event)
+  pageHandler = () => ({ ok: true, events: seed40(90), latestSeq: 105, hasMore: true })
+  await app.loadOlder('sess-A')
+  check('T40 第一页正常插入', timelineText().some((text) => text.includes('旧回答 90')), JSON.stringify(timelineText()))
+
+  // 模拟"插入阶段炸了"的残留状态：事件已经在内存里，DOM 里却没有。
+  while (box40.children.length > 0) box40.children.pop()
+  const eventsKept = app.state.events.size
+  check('T40 残留时事件仍在内存', eventsKept > 3, String(eventsKept))
+
+  // 同一页再翻一次：added 会是 0（都被当成"已知道"），必须靠 reflow 把内容补回来。
+  // 门闩要求先滚离顶部（真实场景里用户就是滚上去再滑），这里直接放开。
+  app.state.olderArmed.set('sess-A', true)
+  let caught40 = null
+  try {
+    await app.loadOlder('sess-A')
+  } catch (error) {
+    caught40 = error
+  }
+  check('T40 再次翻页不抛错', caught40 === null, caught40 && caught40.message)
+  const diag40 = {
+    current: app.state.current,
+    older: app.state.older.get('sess-A'),
+    armed: app.state.olderArmed.get('sess-A'),
+    loading: app.state.loadingOlder.size,
+    done: app.state.olderDone.has('sess-A'),
+    events: app.state.events.size,
+    children: box40.children.length,
+  }
+  check('T40 门闩状态允许继续翻页', diag40.armed !== false && diag40.older !== false && diag40.loading === 0, JSON.stringify(diag40))
+  const text40 = timelineText()
+  check('T40 内容被补回时间线', text40.some((text) => text.includes('旧回答 90')) && text40.some((text) => text.includes('旧回答 100')), JSON.stringify(text40))
+}
+
+/* T41 单条事件渲染失败不能拖垮整页，也不能把这一页永久标成"已加载"。 */
+{
+  const source41 = readFileSync(sourcePath, 'utf8')
+  check('T41 prependOlder 逐条兜住渲染异常', /for \(const event of ordered\) \{\s*\n\s*try \{\s*\n\s*appendEvent\(event, holder\)/.test(source41))
+  check('T41 插入失败回滚内存里的事件', /for \(const event of ordered\) state\.events\.delete\(event\.seq\)/.test(source41))
+  check('T41 loadOlder 失败会给提示而不是静默', /catch \(error\) \{\s*\n\s*\/\/ 翻页失败不能静默/.test(source41))
+}
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
 if (expectBug) {
   console.log('（--expect-bug 模式：以上失败项即为已复现的 bug）')

@@ -1236,11 +1236,14 @@ function turnProcessNodes(summaryRow) {
   const index = children.indexOf(summaryRow)
   if (index < 0) return []
   const targets = []
-  // 1) 汇总行上方：往上数到本轮 turn-mark / 上一条正文 / 另一个汇总行为止
+  // 1) 汇总行上方：往上数到本轮 turn-mark / 另一个汇总行为止。
+  // 注意：**遇到正文气泡不停**。历史页里一轮可能是「思考 → 运行命令 → 你的消息 → 回答」，
+  // 过程行被用户消息隔着；以前这里遇到 .msg 就断，结果过程行永远收不进折叠区（用户 m01792：
+  // 上滑能加载，但加载出来的过程行仍然大剌剌铺在前面）。真正的一轮边界是 turn-mark / 汇总行。
   let back = index - 1
   while (back >= 0) {
     const node = children[back]
-    if (node.classList && (node.classList.contains('turn-mark') || node.classList.contains('msg') || node.classList.contains('turn-summary'))) break
+    if (node.classList && (node.classList.contains('turn-mark') || node.classList.contains('turn-summary'))) break
     if (node.classList && node.classList.contains('ev-wrap')) targets.unshift(node)
     back -= 1
   }
@@ -1795,7 +1798,6 @@ async function loadOlder(sessionId) {
       if (added.length > 0 || !hasMore) break
     }
     state.older.set(sessionId, hasMore)
-    if (added.length === 0 || hasMore !== true) noteOlderDone(sessionId, added.length === 0)
     if (sessionId !== state.current) return
     if (added.length > 0) {
       // 先把"正在加载"那行摘掉，再往顶部插新内容，避免它夹在旧内容中间。
@@ -1815,7 +1817,19 @@ async function loadOlder(sessionId) {
       state.olderArmed.set(sessionId, !scrollable)
       // 翻页期间用户的手指还在屏幕上：立刻复位贴底状态，避免下一次 reflow 把他拽回底部。
       state.pinBottom = false
+    } else if (hasMore) {
+      // 拿回来的事件全都在 state.events 里了，但屏幕上没有——说明之前某次插入半路失败，
+      // 事件被记进了内存却没渲染出来。这时不能静默收场（用户看到的就是"提示一闪，什么也没加载出来"），
+      // 整表重建一次把缺失的内容补上。
+      reflow()
+      const grew = box.scrollHeight - prevHeight
+      box.scrollTop = prevTop + Math.max(0, grew)
     }
+    if (added.length === 0 || hasMore !== true) noteOlderDone(sessionId, added.length === 0)
+  } catch (error) {
+    // 翻页失败不能静默：以前异常会一路冒到滚动事件里，用户只看到"提示一闪"，再滑也翻不动。
+    console.warn('loadOlder failed', error && error.message)
+    toast(error instanceof Error ? error.message : String(error))
   } finally {
     if (hint) hint.remove()
     state.loadingOlder.delete(sessionId)
@@ -1832,18 +1846,33 @@ function prependOlder(events) {
   const realBox = box
   const pendingBefore = state.seen
   state.seen = new Set()
-  for (const event of ordered) appendEvent(event, holder)
-  state.seen = pendingBefore
-  const nodes = Array.from(holder.children || [])
-  const anchor = realBox.firstChild || null
-  for (const node of nodes) {
-    if (node.classList) node.classList.add('older-in')
-    realBox.insertBefore(node, anchor)
+  // 一条事件渲染失败不能拖垮整页：否则这一页的事件已经进了 state.events，
+  // 下次再翻会被当成"已知道"全部跳过，用户就永远看不到这条历史了（静默失效）。
+  for (const event of ordered) {
+    try {
+      appendEvent(event, holder)
+    } catch (error) {
+      console.warn('older event render failed', event && event.seq, error && error.message)
+    }
   }
-  // 跨页被截断的那一轮：它的过程行一半在上面的历史片段里，另一半早已在时间线里。
-  // 刚插进来的那批没有 ev-stowed，会裸着露出来（用户 m01572 的"又显示了"），
-  // 所以插入后把所有汇总行重新归位一次——幂等，已经收好的不会变，展开着的用户行会跳过。
-  restowAllSummaries(realBox)
+  state.seen = pendingBefore
+  // 万一插入阶段抛错（DOM 意外状态），把这一页的事件从内存里退回去，
+  // 否则它们会被当成"已加载"永久跳过。抛出的异常继续往上走，由 loadOlder 兜住提示。
+  try {
+    const nodes = Array.from(holder.children || [])
+    const anchor = realBox.firstChild || null
+    for (const node of nodes) {
+      if (node.classList) node.classList.add('older-in')
+      realBox.insertBefore(node, anchor)
+    }
+    // 跨页被截断的那一轮：它的过程行一半在上面的历史片段里，另一半早已在时间线里。
+    // 刚插进来的那批没有 ev-stowed，会裸着露出来（用户 m01572 的"又显示了"），
+    // 所以插入后把所有汇总行重新归位一次——幂等，已经收好的不会变，展开着的用户行会跳过。
+    restowAllSummaries(realBox)
+  } catch (error) {
+    for (const event of ordered) state.events.delete(event.seq)
+    throw error
+  }
   // 淡入动画只动透明度，不改高度：滚动锚定在同一帧里已经补偿过，
   // 所以"内容从上方长出来"时用户盯着的那一行不会位移（避免视觉跳变）。
 }
