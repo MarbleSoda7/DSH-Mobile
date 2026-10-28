@@ -1,12 +1,22 @@
 # 把「手机远程接管 DSH」的宿主插件插入 profile。
-# 只监听回环地址；手机会经 Cloudflare 临时隧道（或云服务器 frp）访问。
-# - publicOrigin：frp 修好后的固定公网地址（安全组放行 7788 后才有效）
-# - tunnelUrlFile：当前 Cloudflare 隧道地址，每次隧道重启由 tools/tunnel.ps1 更新
+# 默认监听 0.0.0.0，手机和电脑连同一个 Wi-Fi 就能直接访问；
+# 不方便同网时再走隧道（SSH 反向隧道 / frp / Cloudflare）。
+#
+# 可选配置项（都可以删掉，删掉即用默认值）：
+# - host：监听地址，默认 '0.0.0.0'（所有网卡）。
+#     改成 '127.0.0.1' 就只监听本机——那样手机只能走隧道，直连局域网 IP 会「无法访问」。
+# - publicOrigin：手机入口的固定公网地址，例如 'https://dsh.example.com'。
+#     留空时优先用隧道自身上报的地址，再退回 http://<局域网 IP>:7788。
+#     二维码里默认编的就是它；配对时也能在面板上手选局域网地址。
+# - tunnelUrlFile：隧道把最新地址写进某个文件时，插件会读这个文件当作入口地址。
+# - tunnel.*：让插件自己托管一条 SSH 反向隧道（每台电脑占一个远端端口）。
+# - maxDevices：同时可绑定的手机台数，默认 1（新设备配对会踢掉旧的）。
 - insert:
     - id: mobile-remote
       name: '@local/dsh-mobile-remote'
       config:
-        host: '127.0.0.1'
+        # 0.0.0.0 = 监听所有网卡，手机直连局域网 IP 才能通。
+        # 只写 127.0.0.1 的话，只有本机能访问，手机扫码必然「无法访问」。
+        # 不想暴露到局域网时改回 '127.0.0.1'，走隧道访问。
+        host: '0.0.0.0'
         port: 7788
-        publicOrigin: 'http://8.152.5.127:7788'
-        tunnelUrlFile: 'C:/Users/29113/AppData/Local/cloudflared/url.txt'
