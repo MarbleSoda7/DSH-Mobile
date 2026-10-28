@@ -1,22 +1,37 @@
-# /etc/caddy/Caddyfile
-# 只反代 DSH 手机接管那一个端口；/admin 只有电脑本机能用，这里再挡一层。
+# /etc/caddy/Caddyfile —— 8.152.5.127 上的唯一入口
+#
+# 服务器对公网只开一个端口：7789。所有"服务器自己干的事"都从它进来：
+#
+#   POST /api/claim   → 分配接口（127.0.0.1:7791），电脑申请端口
+#   POST /api/verify  → 同上，frps 建代理时回调校验 token
+#   其它所有路径       → frps 控制通道（127.0.0.1:7000），frpc 用它协商隧道
+#
+# frps 的控制通道本来是自己的一套二进制协议，Caddy 反代不了（连接一上来就断）。
+# 所以电脑侧的 frpc 配成 transport.protocol = "websocket"：控制流量变成一个
+# 标准的 HTTP Upgrade 请求，Caddy 就能原样转给 frps。
+#
+# 用户电脑对外的端口是 9000-9019，走 frp 直连，不经过这里。
 
 {
 	admin off
-	email you@example.com
 }
 
-# 把 dsh.example.com 换成你的域名（A 记录指向 8.152.5.127）
-dsh.example.com {
-	encode zstd gzip
+:7789 {
+	handle /api/* {
+		reverse_proxy 127.0.0.1:7791 {
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
 
-	# 配对页/设备管理只能在电脑本机操作，公网一律拒绝
-	@admin path /admin /admin/*
-	respond @admin "只允许在电脑上打开 http://127.0.0.1:7788/admin" 403
-
-	reverse_proxy 127.0.0.1:7788 {
-		# SSE 不能被缓冲，否则手机要等到整条消息生成完才显示
-		flush_interval -1
-		header_up X-Forwarded-Proto {scheme}
+	handle {
+		reverse_proxy 127.0.0.1:7000 {
+			# frp 走 websocket，是长连接，必须关掉缓冲和超时。
+			flush_interval -1
+			transport http {
+				read_timeout 0
+				write_timeout 0
+				dial_timeout 5s
+			}
+		}
 	}
 }

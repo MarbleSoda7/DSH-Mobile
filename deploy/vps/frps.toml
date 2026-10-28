@@ -1,22 +1,41 @@
 # /etc/frp/frps.toml —— 云服务器（8.152.5.127）上的 frp 服务端
-# 只做一件事：把电脑上的 127.0.0.1:7788 借到服务器的 127.0.0.1:7788。
-# 对外永远只让 Caddy 碰这个端口，frp 本身不直接暴露 HTTP。
+#
+# frps 只做一件事：把每台电脑的 127.0.0.1:7788 借到服务器的一个 9xxx 端口。
+# 端口号由分配接口（deploy/vps/api.py，监听 127.0.0.1:7791）统一发放，
+# 电脑拿着 /api/claim 换回来的 token 连上来，frps 用 HTTP 插件回调问一句
+# 「这个 token 允许开哪个端口」，对得上才放行。
+#
+# 这样电脑侧不需要任何账号，也不需要能登录服务器 —— frp 的控制通道只协商端口，
+# 拿不到 shell、拿不到文件、拿不到 root。
 
-bindAddr = "0.0.0.0"
+# 控制通道只在服务器本机监听：公网进来的一律走 7789（Caddy）。
+# 电脑侧的 frpc 配成 transport.protocol = "websocket"，控制流量因此变成普通的
+# HTTP Upgrade 请求，Caddy 能原样转给 127.0.0.1:7000。
+bindAddr = "127.0.0.1"
 bindPort = 7000
 
-# 电脑与服务器之间的共享密钥；setup-frps.sh 会自动生成并写进这里
-auth.method = "token"
-auth.token = "REPLACE_WITH_LONG_RANDOM_TOKEN"
+# 代理端口（9000-9019）必须对公网监听，手机才连得进来。
+# bindAddr 只管控制通道，所以这里单独写。
+proxyBindAddr = "0.0.0.0"
 
-# 只允许代理这一个远端端口，避免有人拿你的 frps 开别的东西
-allowPorts = [{ start = 7788, end = 7788 }]
+# 传输层加密：手机是明文 http（9000 这类端口），但电脑与服务器之间走 TLS。
+transport.tls.force = false
+
+# 端口池：与 api.py 的 PORT_BASE / PORT_SLOTS 保持一致（9000..9019）。
+allowPorts = [{ start = 9000, end = 9019 }]
+
+# 控制通道鉴权交给分配接口：NewProxy 时问它这个 token 属于哪个端口。
+[[httpPlugins]]
+name = "dsh-alloc"
+addr = "127.0.0.1:7791"
+path = "/api/verify"
+ops = ["NewProxy"]
 
 log.to = "/var/log/frp/frps.log"
 log.level = "info"
 log.maxDays = 7
 
-# 仪表盘只在服务器本机可看：ssh -L 7500:127.0.0.1:7500 后再浏览器打开
+# 仪表盘只在服务器本机可看
 webServer.addr = "127.0.0.1"
 webServer.port = 7500
 webServer.user = "admin"
