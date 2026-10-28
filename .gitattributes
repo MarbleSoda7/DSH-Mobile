@@ -1,0 +1,6 @@
+# 源码里的中文注释很多，行尾一律用 LF，换行风格也别跟着各人的编辑器走。
+# 否则 Windows 上编辑一次就整文件「全红」，真正的改动淹没在几万行噪音里。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

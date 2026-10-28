@@ -2,49 +2,244 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>手机接管 · 配对</title>
+<title>手机接管 DSH</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css">
 <style>
-  body { padding: 24px; }
-  .admin { max-width: 720px; margin: 0 auto; }
-  .qr-wrap { background:#fff; padding:16px; border-radius:16px; display:inline-block; }
-  .qr-wrap img { width: 260px; height: 260px; display:block; }
-  .qr-fallback { width:260px; height:260px; display:flex; align-items:center; justify-content:center; text-align:center; color:#111; font-size:14px; line-height:1.8; }
-  .row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid #23262f; }
-  code, .url { word-break: break-all; font-size: 13px; }
+  :root {
+    --bg: #0e1014;
+    --card: #16191f;
+    --card-2: #1c2028;
+    --line: #262b35;
+    --text: #e8ebf1;
+    --dim: #8d97a8;
+    --accent: #4d8dff;
+    --accent-soft: rgba(77, 141, 255, .12);
+    --ok: #37c98b;
+    --warn: #e8b04a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(900px 520px at 50% -180px, #1b2333 0%, var(--bg) 62%) fixed;
+    color: var(--text);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 20px 72px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  .head { margin-bottom: 30px; }
+  .head h1 { margin: 0 0 8px; font-size: 26px; font-weight: 650; letter-spacing: .2px; }
+  .head p { margin: 0; color: var(--dim); font-size: 14px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .brand-mark {
+    width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center;
+    background: linear-gradient(145deg, #4d8dff, #2f63d8); box-shadow: 0 6px 18px rgba(77,141,255,.32);
+  }
+  .brand-mark svg { width: 20px; height: 20px; fill: #fff; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 18px;
+  }
+  .card h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+  .card .sub { margin: 0 0 20px; color: var(--dim); font-size: 13.5px; }
+
+  .pair { display: flex; gap: 26px; flex-wrap: wrap; }
+  .qr-box {
+    background: #fff; border-radius: 14px; padding: 14px; flex: 0 0 auto;
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .qr-box img, .qr-fallback { width: 240px; height: 240px; display: block; }
+  .qr-fallback {
+    display: none; place-items: center; text-align: center;
+    color: #333; font-size: 13px; line-height: 1.7; padding: 16px;
+  }
+  .pair-side { flex: 1 1 250px; min-width: 240px; display: flex; flex-direction: column; gap: 14px; }
+
+  .field label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 7px; }
+  input, select {
+    width: 100%; padding: 11px 13px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--card-2); color: var(--text);
+    font-size: 14px; font-family: inherit; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  input::placeholder { color: #5d6676; }
+
+  .link-box {
+    background: var(--card-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 13px; font-size: 13px; word-break: break-all; color: #b9c7de;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .meta { display: flex; gap: 18px; font-size: 13px; color: var(--dim); flex-wrap: wrap; }
+  .meta b { color: var(--text); font-weight: 600; }
+  .meta code {
+    background: var(--card-2); border: 1px solid var(--line); border-radius: 6px;
+    padding: 1px 7px; color: #b9c7de; font-size: 12.5px;
+  }
+
+  button {
+    font: inherit; cursor: pointer; border-radius: 10px; padding: 11px 18px;
+    border: 1px solid transparent; transition: filter .15s, background .15s, border-color .15s;
+  }
+  button:active { filter: brightness(.94); }
+  .primary {
+    background: linear-gradient(180deg, #5a97ff, #3d7bf0); color: #fff; font-weight: 600;
+    box-shadow: 0 6px 16px rgba(77,141,255,.28);
+  }
+  .ghost { background: transparent; border-color: var(--line); color: #c3ccdb; }
+  .ghost:hover { background: var(--card-2); }
+  .danger { background: transparent; border-color: #3a2b2f; color: #ef8a8a; padding: 6px 12px; font-size: 13px; }
+  .danger:hover { background: #241a1d; }
+
+  .dev-list { display: flex; flex-direction: column; gap: 10px; }
+  .dev {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 13px 15px;
+  }
+  .dev.off { opacity: .5; }
+  .dev-icon {
+    width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; display: grid; place-items: center;
+    background: #202632; color: #8aa0c0;
+  }
+  .dev-icon svg { width: 17px; height: 17px; fill: currentColor; }
+  .dev-main { flex: 1 1 auto; min-width: 0; }
+  .dev-name { font-size: 14px; font-weight: 550; }
+  .dev-sub { font-size: 12.5px; color: var(--dim); margin-top: 2px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(55,201,139,.6); }
+
+  .empty { color: var(--dim); font-size: 14px; padding: 8px 0; }
+  .steps { margin: 0; padding: 0; list-style: none; display: flex; gap: 10px; flex-wrap: wrap; }
+  .steps li {
+    flex: 1 1 180px; background: var(--card-2); border: 1px solid var(--line);
+    border-radius: 11px; padding: 12px 14px; font-size: 13px; color: #b3bdcc;
+  }
+  .steps b { display: block; color: var(--text); font-size: 13px; margin-bottom: 3px; }
+  .steps .num {
+    display: inline-grid; place-items: center; width: 19px; height: 19px; border-radius: 50%;
+    background: var(--accent-soft); color: #7fb0ff; font-size: 11.5px; margin-right: 7px; vertical-align: 1px;
+  }
+  .hint { font-size: 12.5px; color: var(--dim); margin: 10px 0 0; }
+  .adv { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
+  .adv summary { cursor: pointer; color: var(--dim); font-size: 13px; list-style: none; user-select: none; }
+  .adv summary::-webkit-details-marker { display: none; }
+  .adv summary::before { content: '▸ '; }
+  .adv[open] summary::before { content: '▾ '; }
+  .adv-grid { display: grid; gap: 14px; margin-top: 16px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .save-row { margin-top: 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .toast { font-size: 13px; color: var(--ok); }
+  .warn-text { font-size: 13px; color: var(--warn); }
+
+  .chan {
+    margin-top: 20px; background: var(--card-2); border: 1px solid var(--line);
+    border-radius: 13px; padding: 16px 18px;
+  }
+  .chan-head { display: flex; align-items: flex-start; gap: 18px; flex-wrap: wrap; }
+  .chan-head > div:first-child { flex: 1 1 300px; }
+  .chan-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .chan-sub { font-size: 13px; color: var(--dim); line-height: 1.6; }
+  .chan-head select { width: 210px; flex: 0 0 auto; }
+  .chan-foot {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--line);
+    font-size: 13px; color: var(--dim);
+  }
+  .chan-foot b { color: #9dbcff; font-weight: 600; }
 </style>
 </head>
 <body>
-<div class="admin">
-  <h1 style="margin:0 0 6px">手机接管 DSH</h1>
-  <p class="muted">这个页面只能从电脑本机打开。二维码 10 分钟内有效，一次使用后作废。</p>
+<div class="wrap">
 
-  <div class="row" style="margin-top:18px">
-    <div class="qr-wrap"><img id="qr" alt="配对二维码"><div id="qr-fallback" class="qr-fallback" style="display:none">二维码不可用<br>请手动打开右侧网址<br>并输入配对码</div></div>
-    <div style="flex:1; min-width:260px">
-      <p>手机扫码后自动进入绑定；也可以手动打开：</p>
-      <p class="url" id="url">…</p>
-      <p>配对码：<code id="code">…</code></p>
-      <p>剩余有效：<b id="ttl">…</b></p>
-      <p>
-        <label class="muted" for="origin">对外地址（隧道/公网前缀）</label><br>
-        <input id="origin" class="pair-input" placeholder="https://你的域名" style="width:100%;margin-top:6px">
-      </p>
-      <button class="primary-btn" id="btn-new">重新生成二维码</button>
+  <div class="head">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm0 3v12h10V5H7Zm4 13.5h2v1.2h-2v-1.2Z"/></svg>
+      </span>
+      <div>
+        <h1>手机接管 DSH</h1>
+      </div>
     </div>
+    <p>用手机扫一下二维码，就能在手机上继续用这台电脑的 DSH。这个页面只在你自己的电脑上打开。</p>
   </div>
 
-  <h2 style="font-size:16px;margin:28px 0 8px">已绑定设备</h2>
-  <p class="muted" style="margin:0 0 8px">只保留最近绑定的 1 台（新手机绑定时旧手机自动解绑并断开）。想允许多台，把配置里的 maxDevices 调大。</p>
-  <table>
-    <thead><tr><th>名称 / 设备</th><th>绑定时间</th><th>最近使用</th><th></th></tr></thead>
-    <tbody id="devices"></tbody>
-  </table>
-  <p class="muted" id="usage"></p>
+  <div class="card">
+    <h2>用手机扫码绑定</h2>
+    <p class="sub">二维码 <b>10 分钟内</b>有效，只能给一台手机用。过期了会自动换一张。</p>
+
+    <div class="pair">
+      <div class="qr-box">
+        <img id="qr" alt="配对二维码">
+        <div id="qr-fallback" class="qr-fallback">二维码没能生成<br>可以手动打开右边的网址</div>
+      </div>
+
+      <div class="pair-side">
+        <div class="field">
+          <label>手机要访问的网址</label>
+          <div class="link-box" id="url">正在生成…</div>
+        </div>
+        <div class="meta">
+          <span>配对码 <code id="code">…</code></span>
+          <span>还剩 <b id="ttl">…</b></span>
+        </div>
+        <div>
+          <button class="primary" id="btn-new">换一张二维码</button>
+        </div>
+        <p class="hint" id="conn-hint">扫完码后在手机上等两秒即可进入。如果手机打不开，看看下面「网址不对？」。</p>
+      </div>
+    </div>
+
+    <div class="chan">
+      <div class="chan-head">
+        <div>
+          <div class="chan-title">这台电脑走哪条通道</div>
+          <div class="chan-sub">多台电脑共用同一台服务器时，每台选一个不同的编号，手机才不会跑到别人的电脑上。只有你一台电脑时选「第 1 号」即可。</div>
+        </div>
+        <select id="lc-slot"></select>
+      </div>
+      <div class="chan-foot">
+        <span id="chan-state">通道 <b id="chan-port">—</b></span>
+        <button class="ghost" id="lc-save">保存</button>
+      </div>
+    </div>
+
+    <details class="adv" id="adv">
+      <summary>服务器地址（已经填好就不用管）</summary>
+      <div class="adv-grid">
+        <div class="field">
+          <label>服务器地址</label>
+          <input id="lc-host" placeholder="例如 8.152.5.127" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>备注（只给你自己看）</label>
+          <input id="lc-note" placeholder="例如 家里台式机" autocomplete="off">
+        </div>
+      </div>
+      <p class="hint" id="lc-status"></p>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>已经连接的手机</h2>
+    <p class="sub" id="dev-sub">最多保留 1 台。用新手机绑定时，旧手机会自动断开。</p>
+    <div class="dev-list" id="devices"></div>
+    <p class="hint" id="usage"></p>
+  </div>
+
+  <div class="card">
+    <h2>怎么用</h2>
+    <p class="sub">绑定一次就够了，之后直接打开手机上的网页即可。</p>
+    <ul class="steps">
+      <li><b><span class="num">1</span>电脑上开 DSH</b>保持这台电脑和 DSH 开着，关掉就访问不了。</li>
+      <li><b><span class="num">2</span>手机扫二维码</b>用相机或浏览器扫，自动完成绑定。</li>
+      <li><b><span class="num">3</span>以后直接打开</b>把网页加到手机桌面，下次一点就进。</li>
+    </ul>
+  </div>
+
 </div>
 
 <script>
@@ -52,76 +247,137 @@ const $ = (id) => document.getElementById(id)
 let timer = 0
 let rotating = false
 
+// 把错误查出来：以前脚本一炸整页就停在「正在生成…」，用户完全不知道发生了什么。
+window.addEventListener('error', (e) => {
+  const node = $('url')
+  if (node && node.textContent === '正在生成…') node.textContent = '生成失败，请刷新页面重试'
+  console.error('admin error', e.message)
+})
+
 // 不要在 HTML 里写 src=""：空 src 会立刻触发一次 error 事件，兜底提示就会常驻。
 $('qr').onload = () => { $('qr').style.display = 'block'; $('qr-fallback').style.display = 'none' }
-$('qr').onerror = () => { $('qr').style.display = 'none'; $('qr-fallback').style.display = 'flex' }
+$('qr').onerror = () => { $('qr').style.display = 'none'; $('qr-fallback').style.display = 'grid' }
+
+const esc = (text) => String(text == null ? '' : text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 
 function fmt(ts) {
   if (!ts) return '—'
   const d = new Date(ts)
-  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const now = new Date()
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  if (d.toDateString() === now.toDateString()) return `今天 ${hm}`
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`
 }
+
+function ago(ts) {
+  if (!ts) return '还没用过'
+  const min = (Date.now() - ts) / 60000
+  if (min < 2) return '刚刚还在用'
+  if (min < 60) return `${Math.round(min)} 分钟前用过`
+  const hour = min / 60
+  if (hour < 24) return `${Math.round(hour)} 小时前用过`
+  return `${Math.round(hour / 24)} 天前用过`
+}
+
+const PHONE_ICON = '<svg viewBox="0 0 24 24"><path d="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm0 3v12h10V5H7Zm4 13.5h2v1.2h-2v-1.2Z"/></svg>'
 
 async function loadDevices() {
   const res = await fetch('/api/devices')
   const data = await res.json()
-  const body = $('devices')
-  body.innerHTML = ''
+  const box = $('devices')
+  box.innerHTML = ''
   const active = (data.devices || []).filter((d) => !d.revoked)
-  const revoked = (data.devices || []).filter((d) => d.revoked).slice(-5).reverse()
+  const revoked = (data.devices || []).filter((d) => d.revoked).slice(-3).reverse()
+
   if (active.length === 0 && revoked.length === 0) {
-    const tr = document.createElement('tr')
-    tr.innerHTML = '<td colspan="4" class="muted">还没有手机绑定。用手机扫上面的二维码即可。</td>'
-    body.appendChild(tr)
+    const div = document.createElement('div')
+    div.className = 'empty'
+    div.textContent = '还没有手机绑定过。扫上面的二维码就行。'
+    box.appendChild(div)
   }
-  const esc = (text) => String(text == null ? '' : text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-  // UA 里最有用的是机型段：iOS 只给"iPhone"，Android 会带具体型号。
-  const uaHint = (ua) => {
-    const text = String(ua || '')
-    if (!text) return ''
-    const android = text.match(/Android[^;)]*;\s*([^;)]+?)(?:\s+Build|\))/i)
-    if (android) return android[1].trim()
-    if (/iPhone/.test(text)) return 'iPhone'
-    if (/iPad/.test(text)) return 'iPad'
-    return text.slice(0, 18)
-  }
+
   for (const device of active) {
-    const tr = document.createElement('tr')
-    const hint = uaHint(device.ua)
-    tr.innerHTML = `<td>${esc(device.name)}<br><span class="muted" style="font-size:11px">${esc(hint || '—')} · ${esc(device.id)}</span></td>
-      <td>${fmt(device.createdAt)}</td><td>${fmt(device.lastSeenAt)}</td>
-      <td><button class="ghost-btn" data-id="${esc(device.id)}">撤销</button></td>`
-    body.appendChild(tr)
+    const row = document.createElement('div')
+    row.className = 'dev'
+    row.innerHTML = `<span class="dev-icon">${PHONE_ICON}</span>
+      <div class="dev-main">
+        <div class="dev-sub"><span class="dot on"></span>已连接 · ${esc(ago(device.lastSeenAt))} · ${fmt(device.createdAt)} 绑定</div>
+      </div>
+      <button class="danger" data-id="${esc(device.id)}">断开</button>`
+    box.appendChild(row)
   }
+
   for (const device of revoked) {
-    const tr = document.createElement('tr')
-    tr.innerHTML = `<td class="muted">${esc(device.name)}<br><span style="font-size:11px">已解绑 · ${esc(device.id)}</span></td>
-      <td class="muted">${fmt(device.createdAt)}</td><td class="muted">${device.revokedAt ? fmt(device.revokedAt) : '—'}</td><td></td>`
-    body.appendChild(tr)
+    const row = document.createElement('div')
+    row.className = 'dev off'
+    row.innerHTML = `<span class="dev-icon">${PHONE_ICON}</span>
+      <div class="dev-main">
+        <div class="dev-sub">已断开 · ${device.revokedAt ? fmt(device.revokedAt) : '—'}</div>
+      </div>`
+    box.appendChild(row)
   }
-  for (const btn of body.querySelectorAll('button[data-id]')) {
+
+  for (const btn of box.querySelectorAll('button[data-id]')) {
     btn.onclick = async () => {
+      btn.disabled = true
+      btn.textContent = '断开中…'
       await fetch('/api/devices/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: btn.dataset.id }) })
       loadDevices()
     }
   }
+
+  $('dev-sub').textContent = active.length
+    ? '这台手机现在可以直接打开 DSH。点「断开」可以让它立刻失效。'
+    : '还没有手机连着。扫上面的二维码就能连上。'
   const u = data.usage || {}
-  $('usage').textContent = `已绑定 ${active.length} 台设备 · 本次运行已发送约 ${((u.bytesOut || 0) / 1024 / 1024).toFixed(2)} MB · ${u.requests || 0} 个请求`
+  const mb = (u.bytesOut || 0) / 1024 / 1024
+  $('usage').textContent = mb > 0.05 ? `本次运行共用掉约 ${mb.toFixed(1)} MB 流量。` : ''
+}
+
+// 老版本页面有个「对外地址」输入框，值存在 localStorage 里。那批用户升级后
+// 不能突然退回局域网地址，所以这里把它当作「服务器地址」迁移进本机配置一次。
+let legacyOriginMigrated = false
+
+async function migrateLegacyOrigin(current) {
+  if (legacyOriginMigrated) return current
+  legacyOriginMigrated = true
+  const saved = (localStorage.getItem('mr.admin.origin') || '').trim()
+  if (!saved) return current
+  localStorage.removeItem('mr.admin.origin')
+  // 已经有端口编号或地址了就不用动，免得把用户手选的覆盖掉。
+  if (current && (current.slot || current.serverHost)) return current
+  let host = ''
+  try { host = new URL(saved).hostname } catch { host = '' }
+  if (!host) return current
+  try {
+    const res = await fetch('/api/local-config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ serverHost: host, slot: 0 }),
+    })
+    const data = await res.json()
+    if (data && data.ok) {
+      if ($('lc-host')) $('lc-host').value = data.serverHost || host
+      return data
+    }
+  } catch { /* 迁移失败就不管，用户还能手动填 */ }
+  return current
 }
 
 async function newCode() {
-  const origin = $('origin').value.trim()
-  const res = await fetch('/api/paircode' + (origin ? '?origin=' + encodeURIComponent(origin) : ''))
+  const res = await fetch('/api/paircode')
   const data = await res.json()
-  if (!data.ok) { $('url').textContent = data.error || '生成失败'; return }
+  if (!data.ok) {
+    $('url').textContent = data.error || '生成失败，请稍后重试'
+    return
+  }
   $('code').textContent = data.code
   $('url').textContent = data.url
   $('qr').src = '/api/qr?format=png&text=' + encodeURIComponent(data.url) + '&v=' + Date.now()
-  localStorage.setItem('mr.admin.origin', origin)
   clearInterval(timer)
   timer = setInterval(() => {
     const left = Math.max(0, Math.round((data.expiresAt - Date.now()) / 1000))
-    $('ttl').textContent = left > 0 ? `${left} 秒` : '已过期，正在换新码…'
+    $('ttl').textContent = left > 0 ? `${left} 秒` : '已过期，正在换新…'
     if (left === 0) clearInterval(timer)
     // 快过期时自动换一张新码：手机扫到时永远不会拿到失效的码
     else if (left <= 45 && !rotating) {
@@ -131,14 +387,112 @@ async function newCode() {
   }, 1000)
 }
 
-// 对外地址留空时由服务端按 publicOrigin（固定公网 IP）→ 隧道地址 → 局域网 依次决定，
-// 所以这里不再预填任何值，避免用户看到"像是被隧道域名占住了"。
-$('origin').value = localStorage.getItem('mr.admin.origin') || ''
-$('origin').placeholder = '留空＝自动（固定公网 IP 优先）'
+/* ---- 通道（多机共用一台服务器时每台占一个） --------------------------------
+ * 服务器上预留了若干个端口，每台电脑占一个。这份选择存在本机，不进仓库，
+ * 所以克隆同一份代码的两台电脑不会互相覆盖。 */
+function renderSlots(data) {
+  const sel = $('lc-slot')
+  const portNode = $('chan-port')
+  if (!sel) return
+  const keep = sel.value
+  sel.innerHTML = ''
+  for (const s of data.slots || []) {
+    const opt = document.createElement('option')
+    opt.value = String(s.slot)
+    opt.textContent = `第 ${s.slot} 号`
+    sel.appendChild(opt)
+  }
+  // 服务端给的是「还没选」时，默认落在第 1 号，省得用户先去翻设置。
+  const want = keep || String(data.slot || 1)
+  sel.value = want
+  const picked = (data.slots || []).find((s) => String(s.slot) === sel.value)
+  if (portNode) portNode.textContent = picked ? `第 ${picked.slot} 号 · 端口 ${picked.port}` : '—'
+  sel.onchange = () => {
+    const now = (data.slots || []).find((s) => String(s.slot) === sel.value)
+    if (portNode) portNode.textContent = now ? `第 ${now.slot} 号 · 端口 ${now.port}` : '—'
+  }
+}
+
+function renderStatus(data, message) {
+  const node = $('lc-status')
+  if (node) {
+    if (message) { node.textContent = message; node.className = 'toast' } else { node.textContent = ''; node.className = 'toast' }
+  }
+  const hint = $('conn-hint')
+  if (!hint) return
+  const target = (data && (data.origin || data.fallbackOrigin)) || ''
+  if (target) hint.innerHTML = `手机扫码后会访问 <b>${esc(target)}</b>。`
+}
+
+async function loadLocalConfig() {
+  const res = await fetch('/api/local-config')
+  const data = await res.json()
+  if (!data.ok) { renderStatus({}); return {} }
+  $('lc-host').value = data.serverHost || ''
+  $('lc-note').value = data.note || ''
+  renderSlots(data)
+  renderStatus(data)
+  // 老机器升级上来时 slot 还是 0，但页面上已经默认选中第 1 号，
+  // 不落盘就会出现「界面显示第 1 号、二维码却是 7788」的错位，这里顺手存一次。
+  if (!data.slot) {
+    try {
+      const saved = await fetch('/api/local-config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          serverHost: data.serverHost || $('lc-host').value.trim(),
+          slot: Number($('lc-slot').value) || 1,
+          note: data.note || '',
+        }),
+      })
+      const next = await saved.json()
+      if (next && next.ok) { renderSlots(next); renderStatus(next); return next }
+    } catch { /* 存不下就按默认走，页面照样能用 */ }
+  }
+  return data
+}
+
 $('btn-new').onclick = newCode
-newCode()
-loadDevices()
-setInterval(loadDevices, 5000)
+$('lc-save').onclick = async () => {
+  const slot = Number($('lc-slot').value) || 1
+  const res = await fetch('/api/local-config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      serverHost: $('lc-host').value.trim(),
+      slot,
+      note: $('lc-note').value.trim(),
+    }),
+  })
+  const data = await res.json()
+  if (!data.ok) {
+    const node = $('lc-status')
+    node.textContent = data.error || '保存失败'
+    node.className = 'warn-text'
+    return
+  }
+  renderSlots(data)
+  renderStatus(data, `已存好：第 ${data.slot} 号`)
+  // 通道换了之后二维码必须重生成，否则还挂着旧端口。
+  newCode()
+}
+
+/* 启动。普通 <script> 里不能写顶层 await（会直接 SyntaxError，整段脚本都不执行），
+ * 所以套一层 async 函数。 */
+async function boot() {
+  const bootConfig = await migrateLegacyOrigin(await loadLocalConfig())
+  // 地址已经能拼出来就不用展开，别让普通用户看到多机配置。
+  const ready = bootConfig && (bootConfig.origin || bootConfig.fallbackOrigin)
+  if (ready) $('adv').open = false
+  loadDevices()
+  setInterval(loadDevices, 5000)
+  await newCode()
+}
+
+boot().catch((err) => {
+  console.error(err)
+  $('url').textContent = '页面加载失败，请刷新重试'
+})
 </script>
 </body>
 </html>

@@ -25,3 +25,6 @@ Thumbs.db
 desktop.ini
 node_modules/
 lib/index.bugcheck.js
+
+__pycache__/
+*.pyc
