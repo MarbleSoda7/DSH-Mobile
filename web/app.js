@@ -2229,6 +2229,20 @@ function noteOlderStuck(sessionId, detail) {
   toast('更早的记录没取到，已把原因显示在时间线顶部')
 }
 
+// reflow() 是"整表重建"，代价随事件数线性增长（真机上一条历史会话上千条）。
+// 补洞、乱序归位这类场景会连着触发它：切后台回来时服务端可能一口气补几十上百帧，
+// 每帧都命中 `event.seq < latest` → 每帧重建一次 → 主线程被 O(n²) 拖死。
+// 所以这条路径不直接调 reflow()，改成"打脏标记 + 合并一次"：
+// 无论这波补进来多少帧，都只在下一个宏任务里重建一遍。
+let reflowPending = 0
+function scheduleReflow() {
+  if (reflowPending) return
+  reflowPending = setTimeout(() => {
+    reflowPending = 0
+    reflow()
+  }, 0)
+}
+
 function reflow() {
   // 插话的合成气泡（steer 帧先于 user/message 到达时画出来的）必须跨 reflow 存活：
   // clearTranscript() 会清空 DOM 和 state.steerNodes，若不在重建时补回，
@@ -2394,7 +2408,7 @@ function startSse() {
     state.retry = 0
     setConn('on', '已连接')
   })
-  for (const type of ['event', 'status', 'delta', 'question', 'question-resolved', 'question-expired', 'approval', 'queue', 'kicked']) {
+  for (const type of ['event', 'status', 'delta', 'question', 'question-resolved', 'question-expired', 'approval', 'queue', 'kicked', 'resync']) {
     es.addEventListener(type, (message) => {
       let payload
       try { payload = JSON.parse(message.data) } catch { return }
@@ -2533,6 +2547,29 @@ function handleFrame(type, payload) {
     }
     return
   }
+  if (type === 'resync') {
+    // 服务端积压太多（切后台很久），主动放弃逐帧回放，让我们自己对齐一次。
+    // 只需一次拉取 + 一次重建，代价与"积压多少帧"无关。
+    //
+    // 这里**必须**认下服务端给的 cursor：普通帧路径刻意不合并（合并会永久跳过漏收的
+    // 事件），但 resync 的语义就是"中间那些不要了，直接跳到最新"。不认的话游标永远
+    // 落后，下一次轮询又判定积压，会在 resync 和回放之间无限打转。
+    const cursor = payload && payload.cursor
+    if (cursor && typeof cursor === 'object') {
+      for (const [sessionId, seq] of Object.entries(cursor)) {
+        if (typeof seq !== 'number') continue
+        state.cursors[sessionId] = Math.max(state.cursors[sessionId] || 0, seq)
+      }
+      saveCursors()
+    }
+    // 刻意不清 state.events：被跳过的是"切后台这段时间的新帧"，本地已有的历史仍然有效，
+    // 清掉会让用户回来只剩最后一页（以前就因为丢历史被提过）。中间留个断口比丢历史好。
+    state.retry = 0
+    setConn('on', state.transport === 'poll' ? '省流模式' : '已连接')
+    refreshState().catch(() => {})
+    if (state.current) loadLatest(state.current).catch(() => {})
+    return
+  }
   if (type === 'event') {
     const event = payload
     const sessionId = event.sessionId || state.current
@@ -2579,8 +2616,9 @@ function handleFrame(type, payload) {
     state.events.set(event.seq, event)
     // 增量事件必须按 seq 归位：轮询批量、SSE 与补洞交错时可能乱序到达，
     // 直接 append 会让正文跑到工具行后面、甚至跨轮（"消息错乱"的主因之一）。
+    // 归位用合并版的 scheduleReflow()：一次补几十帧时不能重建几十遍。
     const latest = state.latestSeq.get(sessionId) || 0
-    if (typeof event.seq === 'number' && event.seq < latest) reflow()
+    if (typeof event.seq === 'number' && event.seq < latest) scheduleReflow()
     else {
       if (typeof event.seq === 'number') state.latestSeq.set(sessionId, event.seq)
       appendEvent(event)
