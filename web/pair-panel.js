@@ -24,6 +24,8 @@
   let qrCode = ''
   let panelOpen = false
   let busy = false
+  /** 用户手动选的手机入口地址；空串表示用服务端自动挑的 */
+  let originPick = ''
 
   /* ------------------------------------------------------------ 小工具 */
 
@@ -116,6 +118,22 @@
 #${PANEL_ID} .dsh-mp-link {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
   word-break: break-all; opacity: .72; margin-bottom: 10px; text-align: center;
+}
+#${PANEL_ID} .dsh-mp-origins {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  margin-bottom: 10px; font-size: 11px; opacity: .85;
+}
+#${PANEL_ID} .dsh-mp-origins[hidden] { display: none; }
+#${PANEL_ID} .dsh-mp-origin-label { opacity: .7; }
+#${PANEL_ID} .dsh-mp-origin {
+  font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-default, rgba(128,128,128,.32));
+  background: transparent; color: inherit;
+}
+#${PANEL_ID} .dsh-mp-origin[data-active="true"] {
+  border-color: currentColor; font-weight: 600;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.14));
 }
 #${PANEL_ID} .dsh-mp-status { display: flex; align-items: center; gap: 7px; font-size: 12px; margin-bottom: 4px; }
 #${PANEL_ID} .dsh-mp-status i { width: 7px; height: 7px; border-radius: 50%; background: #8a8f98; flex: 0 0 auto; }
@@ -229,6 +247,7 @@
     const statusText = el('span', { text: '连接中…' })
     const statusRow = el('div', { class: 'dsh-mp-status', 'data-state': '' }, [statusDot, statusText])
     const hintLine = el('div', { class: 'dsh-mp-hint', text: '' })
+    const originRow = el('div', { class: 'dsh-mp-origins', hidden: true })
     const revokeBtn = el('button', { class: 'dsh-mp-btn', type: 'button', text: '撤销其他设备' })
     const refreshBtn = el('button', { class: 'dsh-mp-btn', type: 'button', text: '换一个二维码' })
     const closeBtn = el('button', { class: 'dsh-mp-btn', type: 'button', text: '关闭' })
@@ -264,18 +283,59 @@
         const data = await api('/code')
         qrCode = data.code || ''
         linkLine.textContent = data.url || ''
-        qrBox.replaceChildren(
-          el('img', {
-            src: `${API}/qr.svg?t=${encodeURIComponent(qrCode)}&_=${Date.now()}`,
-            alt: '手机配对二维码',
-          }),
-        )
+        paintQr()
       } catch (error) {
         linkLine.textContent = '二维码生成失败'
         qrBox.replaceChildren(el('div', { class: 'dsh-mp-hint', text: String(error.message || error) }))
       } finally {
         busy = false
         refreshBtn.disabled = false
+      }
+    }
+
+    /** 按当前选中的入口地址重画二维码。originPick 为空表示用服务端自动挑的。 */
+    const paintQr = () => {
+      if (!qrCode) return
+      const origin = originPick ? `&origin=${encodeURIComponent(originPick)}` : ''
+      qrBox.replaceChildren(
+        el('img', {
+          src: `${API}/qr.svg?t=${encodeURIComponent(qrCode)}${origin}&_=${Date.now()}`,
+          alt: '手机配对二维码',
+        }),
+      )
+      linkLine.textContent = originPick ? `${originPick}/?t=${qrCode}` : linkLine.textContent
+    }
+
+    /** 多网卡 / 有 VPN 的机器上自动挑的地址常连不上，给一个手动切换。 */
+    const paintOrigins = (data) => {
+      const list = Array.isArray(data && data.lans) ? data.lans : []
+      const auto = String((data && data.origin) || '')
+      originPick = originPick && list.includes(originPick) ? originPick : ''
+      originRow.replaceChildren()
+      if (list.length < 2 && (!auto || list.includes(auto))) {
+        originRow.hidden = true
+        return
+      }
+      originRow.hidden = false
+      const make = (label, value) => {
+        const btn = el('button', {
+          type: 'button',
+          class: 'dsh-mp-origin',
+          text: label,
+          'data-active': String((originPick || auto) === value),
+        })
+        btn.addEventListener('click', () => {
+          originPick = value === auto ? '' : value
+          paintOrigins(data)
+          paintQr()
+        })
+        return btn
+      }
+      originRow.append(el('span', { class: 'dsh-mp-origin-label', text: '手机用哪个地址：' }))
+      if (auto) originRow.append(make(auto.replace(/^https?:\/\//, ''), auto))
+      for (const item of list) {
+        if (item === auto) continue
+        originRow.append(make(item.replace(/^https?:\/\//, ''), item))
       }
     }
 
@@ -288,6 +348,7 @@
         const data = await api('/state')
         active = (data.devices || []).filter((row) => !row.revoked)
         paintDevices(data.devices)
+        paintOrigins(data)
       } catch (error) {
         setStatus('off', '连不上本机服务')
         hintLine.textContent = String(error.message || error)
@@ -321,6 +382,7 @@
       ]),
       qrBox,
       linkLine,
+      originRow,
       statusRow,
       hintLine,
       el('div', { class: 'dsh-mp-actions' }, [revokeBtn, refreshBtn, closeBtn]),
