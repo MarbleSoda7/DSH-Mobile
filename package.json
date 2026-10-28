@@ -1,8 +1,7 @@
 {
-  "name": "@local/dsh-mobile-remote",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Phone takeover for DeepSeek Harness: scan a QR code, then list/chat/stop/switch models and answer questions from your phone over an incremental, offline-cached PWA.",
+  "name": "@dsh-plugin/mobile-remote",
+  "version": "0.2.0",
+  "description": "用手机接管 DeepSeek Harness：扫一下就打开，在手机上列会话、聊天、停止、切模型、回答提问。纯 Node 内置隧道，不依赖任何外部可执行文件。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -16,18 +15,27 @@
     "lib",
     "web",
     "locale",
-    "tools",
-    "deploy/pc",
+    "deploy/vps",
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
-    "INSTALL.md",
     "LICENSE"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "mobile",
+    "remote",
+    "pwa"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
   },
   "license": "MIT"
 }

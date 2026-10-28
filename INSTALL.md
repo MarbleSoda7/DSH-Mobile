@@ -157,7 +157,7 @@ cmd /c mklink /J "$profile\node_modules\@local\dsh-mobile-remote" "$plugin"
 ```yaml
 - insert:
     - id: mobile-remote
-      name: '@local/dsh-mobile-remote'
+      name: '@dsh-plugin/mobile-remote'
       config:
         host: '127.0.0.1'
         port: 7788

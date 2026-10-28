@@ -195,6 +195,38 @@ def info_payload():
     }
 
 
+def verify_token(token, port):
+    """隧道服务用的直连校验：这个 token 是不是真的拥有这个端口。
+
+    和 _handle_verify 的区别：那个要拆 frps 的 HTTP 插件信封，
+    这个只认最直接的三元组（token, port），给 deploy/vps/tunnel.py 用。
+
+    任何一项对不上就 False——认不得的 token 绝不能放行，
+    否则谁拿到地址都能在我们的机器上开端口。
+    """
+    token = str(token or "").strip()
+    try:
+        port = int(port or 0)
+    except (TypeError, ValueError):
+        return False
+    if not token or not _port_in_pool(port):
+        return False
+    with _lock:
+        entry = _state["routes"].get(token)
+        if not entry:
+            return False
+        if int(entry.get("port") or 0) != port:
+            return False
+        now = _now_ms()
+        entry["seen"] = now
+        row = find_machine(str(entry.get("deviceId") or ""))
+        if row is not None:
+            row["seen"] = now
+            row["token"] = token
+        save()
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "dsh-api/2"
     protocol_version = "HTTP/1.1"
@@ -428,6 +460,25 @@ PLUGIN_SECRET = os.environ.get("DSH_API_PLUGIN_SECRET", "")
 
 def main():
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+
+    # 隧道服务：给每台电脑开一个 9xxx 公网端口，流量从 WebSocket 倒进它本机的 7788。
+    # 从 7791 起监听，Caddy 把 /tunnel 与 /tunnel-data 转过来。
+    # 它和分配接口共用一个进程，好处是 verify 直接调函数、不经过网络，
+    # 也省掉「api 重启了但隧道还在用旧台账」的错位。
+    try:
+        import tunnel as tunnel_mod
+    except ImportError:
+        tunnel_mod = None
+        sys.stderr.write("[api] tunnel.py 不在同目录，隧道服务未启动\n")
+    if tunnel_mod is not None:
+        tunnel_srv = tunnel_mod.TunnelServer(
+            listen_host="127.0.0.1",
+            listen_port=int(os.environ.get("DSH_TUNNEL_PORT", "7791")),
+            verify=verify_token,
+            log=lambda *a: sys.stderr.write("[tunnel] " + " ".join(str(x) for x in a) + "\n"),
+        )
+        tunnel_srv.start()
+
     httpd = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     httpd.daemon_threads = True
     sys.stderr.write("[api] listening on %s:%d, ports %d..%d\n"

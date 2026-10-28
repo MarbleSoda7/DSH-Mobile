@@ -39,7 +39,7 @@ cmd /c mklink /J "$profile\node_modules\@local\dsh-mobile-remote" "$plugin"
 ```yaml
 - insert:
     - id: mobile-remote
-      name: '@local/dsh-mobile-remote'
+      name: '@dsh-plugin/mobile-remote'
       config:
         host: '0.0.0.0'      # 同一 WiFi 下手机直连；只本机用就写 '127.0.0.1'
         port: 7788

@@ -115,7 +115,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7788/api/health   # æœ
 ```yaml
 - insert:
     - id: mobile-remote
-      name: '@local/dsh-mobile-remote'
+      name: '@dsh-plugin/mobile-remote'
       config:
         host: 127.0.0.1
         port: 7788

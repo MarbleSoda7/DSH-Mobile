@@ -30,7 +30,7 @@
 # - maxDevices：同时可绑定的手机台数，默认 1（新设备配对会踢掉旧的）。
 - insert:
     - id: mobile-remote
-      name: '@local/dsh-mobile-remote'
+      name: '@dsh-plugin/mobile-remote'
       config:
         host: '127.0.0.1'
         port: 7788

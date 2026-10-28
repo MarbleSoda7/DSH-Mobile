@@ -2,30 +2,28 @@
 #
 # 服务器对公网只开一个端口：7789。所有"服务器自己干的事"都从它进来：
 #
-#   POST /api/claim   → 分配接口（127.0.0.1:7791），电脑申请端口
-#   POST /api/verify  → 同上，frps 建代理时回调校验 token
-#   其它所有路径       → frps 控制通道（127.0.0.1:7000），frpc 用它协商隧道
+#   /api/*          → 分配接口（127.0.0.1:7791），电脑申请端口
+#   /tunnel         → 隧道控制通道（同上，同一进程里的 TunnelServer）
+#   /tunnel-data    → 隧道数据通道（每条手机连接一条）
 #
-# frps 的控制通道本来是自己的一套二进制协议，Caddy 反代不了（连接一上来就断）。
-# 所以电脑侧的 frpc 配成 transport.protocol = "websocket"：控制流量变成一个
-# 标准的 HTTP Upgrade 请求，Caddy 就能原样转给 frps。
+# 两条隧道连接都是 WebSocket Upgrade，是长连接，必须关掉缓冲和超时，
+# 否则 Caddy 会在空闲一会儿之后把连接掐掉，表现就是手机上「已断开」。
 #
-# 用户电脑对外的端口是 9000-9019，走 frp 直连，不经过这里。
+# 用户电脑对外的端口是 9000-9019，手机直连，不经过这里。
+#
+# 历史：以前这里还有一个 handle 兜底转发给 127.0.0.1:7000（frps）。
+# 现在客户端改成纯 Node 的 lib/tunnel.js，服务器端没有 frps 了，
+# 那个兜底只会把未知路径吐 502，还容易让人误以为隧道是通的——
+# 所以直接删掉，路径不认识就老实回 404。
 
 {
 	admin off
 }
 
 :7789 {
-	handle /api/* {
+	# 隧道：控制通道与数据通道都是 WebSocket
+	handle /tunnel* {
 		reverse_proxy 127.0.0.1:7791 {
-			header_up X-Forwarded-Proto {scheme}
-		}
-	}
-
-	handle {
-		reverse_proxy 127.0.0.1:7000 {
-			# frp 走 websocket，是长连接，必须关掉缓冲和超时。
 			flush_interval -1
 			transport http {
 				read_timeout 0
@@ -33,5 +31,16 @@
 				dial_timeout 5s
 			}
 		}
+	}
+
+	# 分配接口
+	handle /api/* {
+		reverse_proxy 127.0.0.1:7791 {
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	handle {
+		respond "DSH-Mobile gateway. 请用插件生成的二维码地址访问。" 404
 	}
 }
