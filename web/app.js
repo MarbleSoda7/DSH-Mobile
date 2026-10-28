@@ -1750,9 +1750,63 @@ async function loadLatest(sessionId) {
 // 但 limit=1 有个坑：服务端 page() 按"轮"切分，某些游标位置正好落在轮边界上，
 // 会返回**空页但 hasMore=true**（实测 before=12109&limit=1 → 0 条）。所以下面
 // 撞到空页时用更大的页重试一次，而不是就此判定"到底了"。
-const OLDER_PAGE = 1
-const OLDER_PAGE_RETRY = 9
-const OLDER_PAGE_BIG = 40
+// 上一页响应缓存：宿主每接一次 page() 都要把整个会话回放一遍，一次要几秒。
+// 把"下一次要用的那一页"提前取回来（用户还在看当前这一页时），滑到顶就能立刻出内容。
+// 键里带 limit：重试档位不同，拿回来的页也不同，不能混用。
+const PAGE_CACHE_TTL = 120_000
+const pageCache = new Map()
+const prefetching = new Set()
+
+function cacheKey(sessionId, before, limit) {
+  return `${sessionId}|${before}|${limit}`
+}
+
+function cachePage(sessionId, before, limit, page) {
+  pageCache.set(cacheKey(sessionId, before, limit), { page, at: Date.now() })
+}
+
+function takePage(sessionId, before, limit) {
+  const key = cacheKey(sessionId, before, limit)
+  const hit = pageCache.get(key)
+  if (!hit) return null
+  pageCache.delete(key)
+  if (Date.now() - hit.at > PAGE_CACHE_TTL) return null
+  return hit.page
+}
+
+function oldestSeq() {
+  let min = 0
+  for (const seq of state.events.keys()) {
+    if (typeof seq !== 'number' || seq <= 0) continue
+    if (min === 0 || seq < min) min = seq
+  }
+  return min
+}
+
+// 预取"再往上一页"，失败一律静默（这只是加速，不是必经路径）。
+function prefetchOlder(sessionId) {
+  if (!sessionId || sessionId !== state.current) return
+  const oldest = oldestSeq()
+  if (!oldest || oldest <= 1) return
+  const key = cacheKey(sessionId, oldest, OLDER_PAGE)
+  if (pageCache.has(key) || prefetching.has(key)) return
+  prefetching.add(key)
+  api(`/api/session/${encodeURIComponent(sessionId)}/page?limit=${OLDER_PAGE}&before=${oldest}`)
+    .then((page) => {
+      if (page && Array.isArray(page.events)) cachePage(sessionId, oldest, OLDER_PAGE, page)
+    })
+    .catch(() => {})
+    .finally(() => prefetching.delete(key))
+}
+
+// 一页要多少条消息。以前是 1 —— 每次上滑只多出两行，而宿主每接一次 page() 请求
+// 都要把整个会话从头回放到 throughSeq 再往回切（代价与会话总长成正比，与会话无关地慢），
+// 所以小页等于把"全长扫描"重复几十遍，真机上表现为"能加载，但慢得离谱"。
+// 现在一次拿 20 条：同样的历史深度，请求数少 20 倍。
+const OLDER_PAGE = 20
+// 落在轮边界上会返回空页但 hasMore=true，用更大的页重试（服务端上限 60）。
+const OLDER_PAGE_RETRY = 40
+const OLDER_PAGE_BIG = 60
 
 async function loadOlder(sessionId) {
   if (!sessionId || sessionId !== state.current) return
@@ -1790,7 +1844,8 @@ async function loadOlder(sessionId) {
     let served = 0
     let servedMin = 0
     for (const limit of [OLDER_PAGE, OLDER_PAGE_RETRY, OLDER_PAGE_BIG]) {
-      page = await api(`/api/session/${encodeURIComponent(sessionId)}/page?limit=${limit}&before=${oldest}`)
+      // 预取命中就直接用，省掉几秒的等待（宿主回放整个会话很慢）。
+      page = takePage(sessionId, oldest, limit) || await api(`/api/session/${encodeURIComponent(sessionId)}/page?limit=${limit}&before=${oldest}`)
       const events = page.events || []
       served = events.length
       servedMin = 0
@@ -1851,6 +1906,7 @@ async function loadOlder(sessionId) {
     } else if (hasMore !== true) {
       noteOlderDone(sessionId)
     }
+    if (hasMore) prefetchOlder(sessionId)
   } catch (error) {
     // 翻页失败不能静默：以前异常会一路冒到滚动事件里，用户只看到"提示一闪"，再滑也翻不动。
     console.warn('loadOlder failed', error && error.message)

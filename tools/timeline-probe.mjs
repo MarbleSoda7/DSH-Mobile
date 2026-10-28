@@ -644,9 +644,9 @@ await app.loadOlder('sess-A')
 const afterCount = fetchCalls.filter((call) => call.includes('before=')).length
 check('T13 翻到头后记录 hasMore=false', app.state.older.get('sess-A') === false, `older=${app.state.older.get('sess-A')} requests=${afterCount - beforeCount}`)
 
-// T14 轮边界自愈：服务端 page() 按"轮"切分，某些游标位置用 limit=3 会返回
-//     空页但 hasMore=true（真机实测 before=12109&limit=1 → 0 条）。客户端
-//     必须用更大的页重试一次，而不是就此判定"到底了"。
+// T14 轮边界自愈：服务端 page() 按"轮"切分，某些游标位置会返回空页但 hasMore=true。
+//     客户端必须用更大的页重试，而不是就此判定"到底了"。
+//     （页大小已从 1 提到 20：宿主每页都要回放整个会话，小页慢到不可用。）
 reset()
 for (const seq of [91, 92, 93]) app.handleFrame('event', userEv(seq, `第 ${seq} 条`))
 app.state.olderArmed.set('sess-A', true)
@@ -654,7 +654,7 @@ pageHandler = (target) => {
   const limit = Number((target.match(/limit=(\d+)/) || [])[1] || 0)
   const before = Number((target.match(/before=(\d+)/) || [])[1] || 0)
   // 小页正好落在轮边界：怎么问都是空页，但 hasMore 仍是 true。
-  if (limit <= 3) return { ok: true, events: [], latestSeq: 93, hasMore: true }
+  if (limit <= 20) return { ok: true, events: [], latestSeq: 93, hasMore: true }
   return { ok: true, events: [userEv(88, '第 88 条'), userEv(89, '第 89 条')], latestSeq: 93, hasMore: true }
 }
 const retryBefore = fetchCalls.filter((call) => call.includes('before=')).length
@@ -1494,6 +1494,32 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T42 这次拿到内容后才标到底', app.state.olderDone.has('sess-A') === true)
   check('T42 到底了才出现全部记录提示', timelineText().some((text) => text.includes('已经是全部记录了')))
   void box42
+}
+
+/* T43 预取：翻完一页就把下一页提前取回来，下一次上滑直接命中缓存（宿主每页要回放整个会话，很慢）。 */
+{
+  reset()
+  for (const seq of [95, 96, 97]) app.handleFrame('event', userEv(seq, `第 ${seq} 条`))
+  app.state.olderArmed.set('sess-A', true)
+  app.state.olderDone.delete('sess-A')
+  const calls43 = []
+  pageHandler = (target) => {
+    calls43.push(target)
+    const before = Number((target.match(/before=(\d+)/) || [])[1] || 0)
+    return { ok: true, events: [userEv(before - 2, `第 ${before - 2} 条`)], latestSeq: 97, hasMore: true }
+  }
+  await app.loadOlder('sess-A')
+  check('T43 第一页拿到了更早的记录', timelineText().some((text) => text.includes('第 93 条')), JSON.stringify(timelineText()))
+  const pageCalls43 = () => calls43.filter((call) => call.includes('before=')).length
+  check('T43 自动预取了下一页', calls43.some((call) => call.includes('before=93')), JSON.stringify(calls43.map((call) => (call.match(/before=(\d+)/) || [])[0])))
+  const count93 = () => calls43.filter((call) => call.includes('before=93')).length
+  const beforeSecond = count93()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  app.state.olderArmed.set('sess-A', true)
+  await app.loadOlder('sess-A')
+  check('T43 预取命中时不再重复请求这一页', count93() === beforeSecond, `before=93 calls ${beforeSecond} -> ${count93()}`)
+  check('T43 预取的那一页真的插进来了', timelineText().some((text) => text.includes('第 91 条')), JSON.stringify(timelineText()))
+  void pageCalls43
 }
 
 /* T41 单条事件渲染失败不能拖垮整页，也不能把这一页永久标成"已加载"。 */
