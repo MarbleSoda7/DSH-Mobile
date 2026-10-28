@@ -13,7 +13,8 @@ Environment=DSH_API_PORT=7790
 Environment=DSH_API_STATE=/var/lib/dsh-gateway/api.json
 Environment=DSH_API_PORT_BASE=9000
 Environment=DSH_API_PORT_STEP=1
-Environment=DSH_API_SLOTS=20
+Environment=DSH_API_SLOTS=100
+Environment=DSH_API_PUBLIC_PORT_MAX=9099
 Environment=DSH_API_PUBLIC_HOST=8.152.5.127
 Environment=DSH_TUNNEL_PORT=7791
 Environment=PYTHONUNBUFFERED=1

@@ -114,16 +114,6 @@
   .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(55,201,139,.6); }
 
   .empty { color: var(--dim); font-size: 14px; padding: 8px 0; }
-  .steps { margin: 0; padding: 0; list-style: none; display: flex; gap: 10px; flex-wrap: wrap; }
-  .steps li {
-    flex: 1 1 180px; background: var(--card-2); border: 1px solid var(--line);
-    border-radius: 11px; padding: 12px 14px; font-size: 13px; color: #b3bdcc;
-  }
-  .steps b { display: block; color: var(--text); font-size: 13px; margin-bottom: 3px; }
-  .steps .num {
-    display: inline-grid; place-items: center; width: 19px; height: 19px; border-radius: 50%;
-    background: var(--accent-soft); color: #7fb0ff; font-size: 11.5px; margin-right: 7px; vertical-align: 1px;
-  }
   .hint { font-size: 12.5px; color: var(--dim); margin: 10px 0 0; }
   .adv { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
   .adv summary { cursor: pointer; color: var(--dim); font-size: 13px; list-style: none; user-select: none; }
@@ -197,8 +187,7 @@
     <div class="chan">
       <div class="chan-head">
         <div>
-          <div class="chan-title">这台电脑走哪条通道</div>
-          <div class="chan-sub">端口由服务器自动分配，每台电脑一个，不用你选。</div>
+          <div class="chan-title">这条通道</div>
         </div>
       </div>
       <div class="chan-foot">
@@ -217,16 +206,6 @@
     <p class="sub" id="dev-sub">最多保留 1 台。用新手机绑定时，旧手机会自动断开。</p>
     <div class="dev-list" id="devices"></div>
     <p class="hint" id="usage"></p>
-  </div>
-
-  <div class="card">
-    <h2>怎么用</h2>
-    <p class="sub">绑定一次就够了，之后直接打开手机上的网页即可。</p>
-    <ul class="steps">
-      <li><b><span class="num">1</span>电脑上开 DSH</b>保持这台电脑和 DSH 开着，关掉就访问不了。</li>
-      <li><b><span class="num">2</span>手机扫二维码</b>用相机或浏览器扫，自动完成绑定。</li>
-      <li><b><span class="num">3</span>以后直接打开</b>把网页加到手机桌面，下次一点就进。</li>
-    </ul>
   </div>
 
 </div>
@@ -370,9 +349,7 @@ function renderStatus(data, message) {
   const hint = $('conn-hint')
   if (!hint) return
   const target = (data && (data.origin || data.fallbackOrigin)) || ''
-  hint.innerHTML = target
-    ? `手机扫码后访问 <b>${esc(target)}</b>`
-    : '正在向服务器登记这台电脑…'
+  hint.innerHTML = target ? '' : '正在向服务器登记这台电脑…'
 }
 
 async function loadConfig() {
