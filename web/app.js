@@ -957,11 +957,11 @@ function lastAnswerNode(box) {
   return null
 }
 
-function appendDivider(text, isError) {
+function appendDivider(text, isError, host = null) {
   const node = document.createElement('div')
   node.className = `divider${isError ? ' err' : ''}`
   node.textContent = text
-  $('transcript').appendChild(node)
+  ;(host || $('transcript')).appendChild(node)
 }
 
 function appendEvent(event, target = null) {
@@ -997,7 +997,7 @@ function appendEvent(event, target = null) {
     }
     case 'assistant/message': {
       // 正文开始落地 = 这一轮的过程结束：思考/工具行全部收起（电脑版行为）。
-      collapseProcessRows()
+      collapseProcessRows(box)
       // 思考行画在气泡外面，和工具调用同层级（小灰字），不套气泡。
       const thought = appendReasoningRows(box, data.message, { sessionId: event.sessionId || sessionId, seq: event.seq })
       const node = makeMessageNode('assistant')
@@ -1035,20 +1035,24 @@ function appendEvent(event, target = null) {
       const mark = document.createElement('div')
       mark.className = 'turn-mark'
       box.appendChild(mark)
-      state.turnStartedAt.set(sessionId, Number(event.time) || Date.now())
+      // 只有实时的 turn/start 才记开始时间。回填历史（prependOlder 用 target 渲染）时
+      // 记了也只会污染正在跑的那一轮，算出离谱的"用时"。
+      if (!target) state.turnStartedAt.set(sessionId, Number(event.time) || Date.now())
       break
     }
     case 'turn/end': {
       const reason = data.reason?.kind || ''
       // 正文已落地：过程行全部收起。
-      collapseProcessRows()
+      collapseProcessRows(box)
       // 汇总行的位置要跟电脑版一致：过程行 → 「已完成，用时 x」→ 正式回答。
       // 所以插在**本轮最后一条 assistant 气泡之前**，而不是追加在整轮最末尾
       // （追加在末尾会变成"回答完了才说已完成"，用户 m07850 明确要求改掉）。
-      appendTurnSummary(event.time, lastAnswerNode(box))
-      state.turnStartedAt.delete(state.current)
-      if (reason === 'aborted') appendDivider('— 本轮已终止 —', false)
-      else if (reason === 'error') appendDivider(`— 出错：${escapeHtml(String(data.reason?.error?.message || '').slice(0, 120))} —`, true)
+      // host 只在回填历史（target 存在）时传：那样汇总行要落在历史片段里，
+      // 否则它会一条条追加到实时时间线末尾（用户 m01572 的"上下两侧同时展开"就出在这）。
+      appendTurnSummary(event.time, lastAnswerNode(box), target ? box : null)
+      if (!target) state.turnStartedAt.delete(state.current)
+      if (reason === 'aborted') appendDivider('— 本轮已终止 —', false, box)
+      else if (reason === 'error') appendDivider(`— 出错：${escapeHtml(String(data.reason?.error?.message || '').slice(0, 120))} —`, true, box)
       break
     }
     default:
@@ -1164,8 +1168,8 @@ function expandable(row, body, className = '') {
 //
 // 但**用户亲手点开的行不能动**（用户 m01458）：手机上正读着某条思考，
 // 下一步一来就自动收回去，等于"点了也白点"。所以带 data-user-open 的一律跳过。
-function collapseProcessRows() {
-  const box = $('transcript')
+function collapseProcessRows(host = null) {
+  const box = host || $('transcript')
   for (const node of box.children) {
     if (!node.classList) continue
     if (node.dataset && node.dataset.userOpen === '1') continue
@@ -1196,8 +1200,10 @@ function formatDuration(ms) {
 // 位置很关键（用户 m07850 的要求）：电脑版是「过程全部收起 → 一行"已完成，用时 xx"
 // → 正式回答」。所以正文落地时就要把这条汇总行插在**正文之前**，而不是等 turn/end
 // 之后追加在最后（那样汇总行会跑到回答下面，看起来像"回答完了才说已完成"）。
-function appendTurnSummary(endAt, before = null) {
-  const started = state.turnStartedAt.get(state.current) || 0
+function appendTurnSummary(endAt, before = null, host = null) {
+  const container = host || $('transcript')
+  // 回填历史时没有可靠的本轮起点，用事件自带时间算不出有意义的值，就别硬编一个。
+  const started = host ? 0 : (state.turnStartedAt.get(state.current) || 0)
   const end = Number(endAt) || Date.now()
   const ms = started ? end - started : 0
   const label = ms > 0 ? `已完成，用时 ${formatDuration(ms)}` : '已完成'
@@ -1205,14 +1211,13 @@ function appendTurnSummary(endAt, before = null) {
   row.className = 'turn-summary'
   row.innerHTML = `<span class="turn-summary-text">${escapeHtml(label)}</span><span class="ev-chev">⌄</span>`
   row.onclick = () => toggleTurnProcess(row)
-  const host = $('transcript')
   const parent = before ? (before.parentNode || before.parent || null) : null
-  if (before && parent === host) host.insertBefore(row, before)
-  else host.appendChild(row)
+  if (before && parent === container) container.insertBefore(row, before)
+  else container.appendChild(row)
   // 汇总行一落地就把这一轮的过程行藏起来（一级收起）：
   // 屏幕上只剩「已完成，用时 x」和正式回答，过程信息点一下才露缩略、再点才露全文。
   stowTurnProcess(row)
-  state.turnSummaryDone.set(state.current, true)
+  if (!host) state.turnSummaryDone.set(state.current, true)
   return row
 }
 
@@ -1220,17 +1225,22 @@ function appendTurnSummary(endAt, before = null) {
 // 正文气泡、分隔线、上一个 turn-mark 之前的都不动。
 // 结构上优先认「汇总行下面的连续 ev-wrap」（stowTurnProcess 会把它们挪到下面），
 // 同时兼容汇总行上面的老位置，这样无论谁先跑都能收干净。
+//
+// 关键约束（用户 m01572）：**绝不能跨轮收集**。
+// 容器以汇总行自己的父节点为准（回填历史时它在临时 holder 里，不是实时时间线）；
+// 向上扫到另一个 turn-summary 也必须停，否则上滑加载更早记录后，
+// 新插进来的过程行会被算进下面那一轮，点「已完成」就变成上下两侧同时展开/收起。
 function turnProcessNodes(summaryRow) {
-  const box = $('transcript')
+  const box = (summaryRow && (summaryRow.parentNode || summaryRow.parent)) || $('transcript')
   const children = Array.from(box.children || [])
   const index = children.indexOf(summaryRow)
   if (index < 0) return []
   const targets = []
-  // 1) 汇总行上方：往上数到本轮 turn-mark / 上一条正文为止
+  // 1) 汇总行上方：往上数到本轮 turn-mark / 上一条正文 / 另一个汇总行为止
   let back = index - 1
   while (back >= 0) {
     const node = children[back]
-    if (node.classList && (node.classList.contains('turn-mark') || node.classList.contains('msg'))) break
+    if (node.classList && (node.classList.contains('turn-mark') || node.classList.contains('msg') || node.classList.contains('turn-summary'))) break
     if (node.classList && node.classList.contains('ev-wrap')) targets.unshift(node)
     back -= 1
   }
@@ -1249,7 +1259,8 @@ function turnProcessNodes(summaryRow) {
 // 注意这里不用 .open —— .open 是二级状态（展开某一条的完整内容）。
 // 一级只做"从屏幕上撤掉"，屏幕上只剩一行「已完成」+ 正式回答。
 function stowTurnProcess(summaryRow) {
-  const box = $('transcript')
+  if (summaryRow && summaryRow.dataset && summaryRow.dataset.userOpen === '1') return
+  const box = (summaryRow && (summaryRow.parentNode || summaryRow.parent)) || $('transcript')
   const targets = turnProcessNodes(summaryRow)
   // 位置很关键（用户 m00261）：过程行必须排在汇总行**下面**。
   // 原来它们在汇总行上面，一级展开时内容把标题顶下去一大截，
@@ -1276,6 +1287,16 @@ function stowTurnProcess(summaryRow) {
   summaryRow.classList.remove('open')
 }
 
+// 把所有「已完成」汇总行重新归位一次（上滑加载更早记录之后调用）。
+// 幂等：已经收好的行 previousSibling === anchor 会直接跳过，不会来回搬。
+// 用户亲手展开的汇总行（data-user-open）整轮不碰，否则翻页会把读着的那轮收回去。
+function restowAllSummaries(box = null) {
+  const host = box || $('transcript')
+  for (const node of Array.from(host.children || [])) {
+    if (node.classList && node.classList.contains('turn-summary')) stowTurnProcess(node)
+  }
+}
+
 // 点「已完成，用时 x」：一级展开 / 收起。
 //   展开 → 露出这一轮的过程行缩略（「✦ 思考 · 前 60 字…」「› 运行命令 · 描述 · 143 字」）；
 //   收起 → 再整批藏回去。
@@ -1293,6 +1314,8 @@ function toggleTurnProcess(summaryRow) {
     if (row && row.setAttribute) row.setAttribute('aria-expanded', stowed ? 'true' : 'false')
   }
   summaryRow.classList.toggle('open', stowed)
+  // 用户亲手展开的一级（这个过程组）也要记住，否则「加载更早记录」时会话一归位就被收回去。
+  if (summaryRow.dataset) summaryRow.dataset.userOpen = stowed ? '1' : ''
 }
 
 function toolCallRow(data) {
@@ -1817,6 +1840,10 @@ function prependOlder(events) {
     if (node.classList) node.classList.add('older-in')
     realBox.insertBefore(node, anchor)
   }
+  // 跨页被截断的那一轮：它的过程行一半在上面的历史片段里，另一半早已在时间线里。
+  // 刚插进来的那批没有 ev-stowed，会裸着露出来（用户 m01572 的"又显示了"），
+  // 所以插入后把所有汇总行重新归位一次——幂等，已经收好的不会变，展开着的用户行会跳过。
+  restowAllSummaries(realBox)
   // 淡入动画只动透明度，不改高度：滚动锚定在同一帧里已经补偿过，
   // 所以"内容从上方长出来"时用户盯着的那一行不会位移（避免视觉跳变）。
 }
@@ -2683,6 +2710,9 @@ async function queueAction(item, action, text) {
     touchQueue(sessionId, item.itemId, { removed: true })
   }
   const optimisticSeq = action === 'steer' ? -Date.now() : 0
+  // 排队条里的 ↑ 也是插话，触感反馈要一致（用户 m01631 说的是"长按发送键"，
+  // 但同一个动作两条入口，手感不该分叉）。
+  if (action === 'steer') haptic('steer')
   if (action === 'steer') {
     // 插话后立刻出现的"你"气泡也要能看出带了图（本地没有 base64，只有张数）。
     const imageCount = Number(item.imageCount) || 0
@@ -2892,6 +2922,7 @@ async function steerNow() {
   if ((!text && state.attachments.length === 0) || !state.current) return
   const sessionId = state.current
   if (!(state.turnOpen.get(sessionId) === true || state.running.get(sessionId) === true)) {
+    haptic('fail')
     toast('当前没有正在执行的回合，直接发送即可')
     return
   }
@@ -2905,6 +2936,23 @@ async function steerNow() {
  * 两条路都通。onclick 在长按抬手后依然会触发，所以用 longPressed 标志吞掉那一次。
  */
 const STEER_HOLD_MS = 500
+
+/* 触感反馈（用户 m01631：长按发送键插话时震动一下）。
+ * Android 的 navigator.vibrate 在系统浏览器 / Chrome / 夸克里基本都能用；
+ * iOS Safari **没有** Vibration API，这里只能安静地什么都不做——
+ * 网上那些用 <input switch> 骗触感的 hack 早已失效，不要加。
+ * 返回值只用来让测试能断言"确实调了"，业务上忽略即可。 */
+function haptic(kind = 'steer') {
+  const nav = typeof navigator === 'undefined' ? null : navigator
+  if (!nav || typeof nav.vibrate !== 'function') return false
+  // 插话是"双短震"，比单一下更像"已切换成插话"；失败用"长-短"区分。
+  const pattern = kind === 'fail' ? [30, 60, 12] : [14, 46, 20]
+  try {
+    return nav.vibrate(pattern)
+  } catch {
+    return false
+  }
+}
 
 function bindSendButton() {
   const button = $('btn-send')
@@ -2923,7 +2971,7 @@ function bindSendButton() {
     timer = setTimeout(() => {
       timer = 0
       longPressed = true
-      if (navigator.vibrate) navigator.vibrate(12)
+      haptic('steer')
       steerNow()
     }, STEER_HOLD_MS)
   })

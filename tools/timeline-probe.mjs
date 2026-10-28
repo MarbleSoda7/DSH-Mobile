@@ -320,7 +320,15 @@ class EventSource {
   addEventListener(name, fn) { this.listeners.set(name, fn) }
   close() {}
 }
-const navigator = {}
+// 触感替身：真机走 navigator.vibrate，这里只记录调用参数，
+// 让 T38 能断言"长按插话确实震了、用的是哪套节奏"。
+const navigator = {
+  vibrateCalls: [],
+  vibrate(pattern) {
+    this.vibrateCalls.push(pattern)
+    return true
+  },
+}
 const locationStub = { search: '', hash: '', href: 'http://127.0.0.1:7788/' }
 // 软键盘：app.js 用 window.innerHeight 与 window.visualViewport 算被输入法盖住的高度。
 // 替身给可改的高度，T31 直接改这两个值来模拟"键盘弹出"。
@@ -356,7 +364,7 @@ globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0)
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode, keyboardInset, applyKeyboardInset, rememberDeviceCookie, logout }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode, keyboardInset, applyKeyboardInset, rememberDeviceCookie, logout, haptic, prependOlder, turnProcessNodes, stowTurnProcess, toggleTurnProcess, restowAllSummaries, appendTurnSummary }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
@@ -1312,6 +1320,73 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T36 已输入的内容没被清掉', Boolean(editRow2) && editRow2.children[0].value === '我改了半截的话', editRow2 && editRow2.children[0].value)
   app.state.editingQueue = ''
   app.renderQueue()
+}
+
+/* T37 上滑加载更早记录不能破坏折叠（用户 m01572）：
+   ① 回填进来的历史过程行必须默认收起，不许裸着露出来；
+   ② 「这一轮」的范围不许跨轮 —— 点历史那一轮不能连带展开新那一轮
+      （原来的双向扫描会一路扫过上一行「已完成」，造成上下两侧同时动）。 */
+{
+  app.state.current = 'sess-A'
+  const box = document.getElementById('transcript')
+  box.children = []
+  box.innerHTML = ''
+  app.state.events = new Map()
+  app.state.seen = new Set()
+  app.state.turnStartedAt = new Map()
+  app.state.turnSummaryDone = new Map()
+  const wraps = () => box.children.filter((node) => node.classList && node.classList.contains('ev-wrap'))
+  const summaries = () => box.children.filter((node) => node.classList && node.classList.contains('turn-summary'))
+  const toolEv = (seq, verb, target) => ({
+    type: 'tool/call', seq, time: seq, sessionId: 'sess-A',
+    data: { name: 'pwsh', arguments: '{"command":"x"}', summary: { kind: 'cmd', verb, target } },
+  })
+
+  // 较新的那一轮，正常实时渲染
+  app.handleFrame('event', { type: 'turn/start', seq: 600, time: 6000, sessionId: 'sess-A', data: {} })
+  app.handleFrame('event', toolEv(601, '运行命令', '新轮的命令'))
+  app.handleFrame('event', { type: 'turn/end', seq: 602, time: 6200, sessionId: 'sess-A', data: {} })
+  check('T37 实时那一轮有「已完成」行', summaries().length === 1, JSON.stringify(summaries().length))
+  check('T37 实时那一轮的过程行已收起', wraps().every((n) => n.classList.contains('ev-stowed')), JSON.stringify(wraps().map((n) => n.className)))
+
+  // 再把更早的一轮当成"翻页结果"回填进去
+  app.prependOlder([
+    { type: 'turn/start', seq: 590, time: 5900, sessionId: 'sess-A', data: {} },
+    toolEv(591, '读取', '旧轮甲'),
+    toolEv(592, '编辑', '旧轮乙'),
+    { type: 'turn/end', seq: 593, time: 5950, sessionId: 'sess-A', data: {} },
+  ])
+  const rows = summaries()
+  check('T37 回填后有两行「已完成」', rows.length === 2, JSON.stringify(rows.map((n) => n.textContent)))
+  check('T37 回填的历史进程行没有裸在外面', wraps().every((n) => n.classList.contains('ev-stowed')), JSON.stringify(wraps().map((n) => n.className)))
+  check('T37 历史轮的「已完成」排在前面', rows[0].textContent.includes('已完成') && rows[1].textContent.includes('已完成'))
+
+  const oldWraps = app.turnProcessNodes(rows[0])
+  const newWraps = app.turnProcessNodes(rows[1])
+  check('T37 历史轮只收集自己的两条过程行', oldWraps.length === 2, String(oldWraps.length))
+  check('T37 新轮只收集自己的一条过程行', newWraps.length === 1, String(newWraps.length))
+
+  rows[0].onclick()
+  check('T37 展开历史轮时新轮不跟着展开', newWraps.every((n) => n.classList.contains('ev-stowed')), JSON.stringify(newWraps.map((n) => n.className)))
+  check('T37 展开历史轮后它自己的行露出来', oldWraps.every((n) => !n.classList.contains('ev-stowed')), JSON.stringify(oldWraps.map((n) => n.className)))
+  check('T37 展开过的历史轮被记为"用户自己打开"', rows[0].dataset.userOpen === '1', String(rows[0].dataset.userOpen))
+
+  // 再翻一页：用户展开着的那一轮不许被归位逻辑收回去
+  app.prependOlder([{ type: 'user/message', seq: 580, time: 5800, sessionId: 'sess-A', data: { role: 'user', content: [{ type: 'text', text: '更早的话' }] } }])
+  check('T37 再翻页不收回用户展开的历史轮', oldWraps.every((n) => !n.classList.contains('ev-stowed')), JSON.stringify(oldWraps.map((n) => n.className)))
+}
+
+/* T38 长按发送键插话要有触感反馈（用户 m01631）。 */
+{
+  navigator.vibrateCalls = []
+  const okSteer = app.haptic('steer')
+  check('T38 插话触感返回成功', okSteer === true, String(okSteer))
+  check('T38 插话用的是双短震节奏', Array.isArray(navigator.vibrateCalls[0]) && navigator.vibrateCalls[0].length === 3, JSON.stringify(navigator.vibrateCalls[0]))
+  app.haptic('fail')
+  check('T38 失败用另一种节奏区分', Array.isArray(navigator.vibrateCalls[1]) && navigator.vibrateCalls[1][0] === 30, JSON.stringify(navigator.vibrateCalls[1]))
+  check('T38 没有 Vibration API 时安静跳过（iOS）', source.includes("typeof nav.vibrate !== 'function'"))
+  check('T38 长按路径确实调了触感', /longPressed = true\s*\n\s*haptic\('steer'\)/.test(source))
+  check('T38 排队条 ↑ 插话也有同样触感', /action === 'steer'\) haptic\('steer'\)/.test(source))
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
