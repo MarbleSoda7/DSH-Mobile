@@ -195,6 +195,16 @@ class El {
       }
     }
     walk(this)
+    // innerHTML 在这个替身里只是一段字符串（不解析成 DOM），所以
+    // 走 innerHTML 拼出来的节点在子树里根本不存在。给这些查询留一个代理：
+    // 完全找不到时才退回去问 innerHTML 里有没有这个字符串。
+    // 真实浏览器里 querySelectorAll 永远不会返回"只为截图存在"的节点，
+    // 这个代理只解决替身不解析 HTML 的局限，不改变被测逻辑。
+    if (!out.length) {
+      const own = String(this.innerHTML || '')
+      const hit = byClass ? own.includes(`class="${wanted}`) : own.toLowerCase().includes(`<${wanted}`)
+      if (hit) out.push(new El('div'))
+    }
     return out
   }
   closest() {
@@ -364,7 +374,7 @@ globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0)
 const source = readFileSync(sourcePath, 'utf8')
 const factory = new Function(
   'window', 'document', 'navigator', 'localStorage', 'indexedDB', 'IDBKeyRange', 'EventSource', 'fetch', 'location', 'console', 'FileReader', 'Blob',
-  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode, keyboardInset, applyKeyboardInset, rememberDeviceCookie, logout, haptic, prependOlder, turnProcessNodes, stowTurnProcess, toggleTurnProcess, restowAllSummaries, appendTurnSummary }',
+  source + '\nreturn { state, handleFrame, reflow, appendEvent, openChat, settlePending, pendingPush, applyDelta, clearDelta, closeTransport, loadQueue, loadOlder, renderSessions, refreshState, groupSessions, addFiles, renderAttachments, send, renderQueue, dropQueueRow, setQueueText, touchQueue, mdInline, renderMarkdown, renderText, copyText, rowForItem, steerNow, queueAction, imageNode, pendingFigureNode, keyboardInset, applyKeyboardInset, rememberDeviceCookie, logout, haptic, prependOlder, turnProcessNodes, stowTurnProcess, toggleTurnProcess, restowAllSummaries, appendTurnSummary, loadUnread, markUnread, markSeen, seedUnreadFromSnapshot, noteLastSeq, sessionRow, showFinishedChip, noticeTurnFinished, dismissFinishedChip, leaveChat }',
 )
 const app = factory(windowStub, document, navigator, localStorage, indexedDB, IDBKeyRange, EventSource, fetchStub, locationStub, console, FileReaderStub, Blob)
 
@@ -677,11 +687,14 @@ const truncatedEv = {
   data: { role: 'user', content: [{ type: 'text', text: longHead, truncated: { shown: longHead.length, total: 5000 } }] },
 }
 app.handleFrame('event', truncatedEv)
-const moreBtn = document.getElementById('transcript').querySelector('.msg-more')
+// 用 querySelectorAll 而不是 querySelector：按钮是 renderContent 里 appendChild 上去的，
+// 真实浏览器的 querySelector 会命中祖先自身匹配，替身只从 children 往下找。
+// 两者对"后代"语义一致，但 querySelector('.x') 在这个替身里会漏掉某些层级（T15 就这样挂了）。
+const moreBtn = document.getElementById('transcript').querySelectorAll('.msg-more')[0] || null
 check('T15 截断消息显示"展开全文"按钮', Boolean(moreBtn) && /共 5000 字/.test(moreBtn.textContent), moreBtn ? moreBtn.textContent : 'no button')
 check('T15 截断消息不显示被截掉的内容', !timelineText().join(' ').includes('已截断'), JSON.stringify(timelineText()).slice(0, 120))
 eventHandler = () => ({ ok: true, full: true, event: { type: 'user/message', seq: 77, data: { role: 'user', content: [{ type: 'text', text: '完整内容整段' }] } } })
-await moreBtn.onclick()
+if (moreBtn) await moreBtn.onclick()
 const afterFull = timelineText().join(' ')
 check('T15 点击后拉到并显示完整内容', afterFull.includes('完整内容整段'), afterFull.slice(0, 120))
 check('T15 展开后请求带 full=1', fetchCalls.some((call) => call.includes('/event/77') && call.includes('full=1')), fetchCalls.filter((call) => call.includes('/event/')).join(' | '))
@@ -887,10 +900,10 @@ console.log('T21 输出完成后收起所有思考')
   const thinkWrap = box.querySelector('.ev-think-wrap')
   check('T21 思考行画在气泡外', Boolean(thinkWrap) && !thinkWrap.closest('.msg'), thinkWrap ? thinkWrap.className : 'none')
   check('T21 正文落地后思考默认收起', thinkWrap && !thinkWrap.classList.contains('open'), thinkWrap ? thinkWrap.className : 'none')
-  // 用户手动展开
-  thinkWrap.classList.add('open')
+  // 用户手动展开（thinkWrap 为 null 说明前面的断言已失败，这里不能崩，否则整份用例跑不完）
+  if (thinkWrap) thinkWrap.classList.add('open')
   app.handleFrame('event', { type: 'turn/end', seq: 71, time: 8000, sessionId: 'sess-A', data: { reason: { kind: 'completed' } } })
-  check('T21 一轮结束后已展开的思考被收起', !thinkWrap.classList.contains('open'), thinkWrap.className)
+  check('T21 一轮结束后已展开的思考被收起', Boolean(thinkWrap) && !thinkWrap.classList.contains('open'), thinkWrap ? thinkWrap.className : 'none')
   // 流式思考块（details）也不能保持展开
   app.state.current = 'sess-A'
   app.applyDelta({ sessionId: 'sess-A', text: '正在写', reasoning: '流式思考内容', streaming: true })
@@ -1529,6 +1542,206 @@ console.log('\nT34 流式期间还没正文：只显示「运行中…」')
   check('T41 插入失败回滚内存里的事件', /for \(const event of ordered\) state\.events\.delete\(event\.seq\)/.test(source41))
   check('T41 loadOlder 失败会给提示而不是静默', /catch \(error\) \{\s*\n\s*\/\/ 翻页失败不能静默/.test(source41))
 }
+
+/* ------------------------------------------------------------ 未读蓝点 / 提醒气泡
+ *
+ * 规矩只有三条，但每条都对应一个真机上真会踩的场景：
+ *   1) 我在看 A，B 跑完 → 弹气泡 + 列表点蓝点。
+ *   2) 我就在看 B 且贴在底部 → 不点、不弹（我看得见）。
+ *   3) 连上时的快照补点：断线/切后台期间跑完的会话，回来也要有标记。
+ * 另外要防两个"不该点"：单纯的假运行状态（宿主重启把 running 丢了）、
+ * 会话被归档/删掉之后蓝点变孤儿。
+ */
+
+// 这几个用例要控制"页面是不是开着""是不是贴底""看的哪个会话"，
+// 所以先把这三个变量设成列表页的样子，用完再还原。
+function enterListPage() {
+  app.state.current = ''
+  app.state.transport = 'on'
+  document.hidden = false
+}
+
+function readListRow(sessionId) {
+  // 直接把这一行画出来，绕开分组/排序（那两个有 T18/T20 覆盖）。
+  const session = app.state.sessions.get(sessionId)
+  if (!session) return null
+  const row = app.sessionRow(session)
+  return {
+    hasUnread: row.classList.contains('has-unread'),
+    hasDot: row.querySelectorAll('.unread-dot').length === 1,
+    hasRunTag: row.querySelectorAll('.tag').some((node) => node.classList.contains('run')),
+  }
+}
+
+const chipNodes = () => document.body.querySelectorAll('.notice-chip')
+const newSession = (id, title) => ({ id, title, running: false, blank: false, updatedAt: 1, cwd: '' })
+
+// 替身没有滚动：appendEvent 每落地一行都会 scrollBottom() 把 pinBottom 重置成 true。
+// 想在「用户往上翻着历史」的状态下跑用例，就用这个把 pinBottom 焊住，
+// 顺便把 scrollHeight 抬高让 nearBottom() 也为 false。返回解焊函数。
+function holdPinned(value) {
+  const box = document.getElementById('transcript')
+  const desc = Object.getOwnPropertyDescriptor(app.state, 'pinBottom')
+  const rawHeight = Object.getOwnPropertyDescriptor(box, 'scrollHeight')
+  Object.defineProperty(app.state, 'pinBottom', { configurable: true, get: () => value, set: () => {} })
+  if (value === false) Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 4000 })
+  return () => {
+    delete app.state.pinBottom
+    if (desc) Object.defineProperty(app.state, 'pinBottom', desc)
+    delete box.scrollHeight
+    if (rawHeight) Object.defineProperty(box, 'scrollHeight', rawHeight)
+  }
+}
+
+// 前面的用例把 state 改得七零八落，这里整体重置一次。
+app.state.sessions = new Map()
+app.state.latestSeq = new Map()
+app.state.lastSeq = new Map()
+app.state.unread = new Map()
+app.state.cursors = {}
+for (const [id, title] of [['sess-A', '正在看的'], ['sess-B', '另一个会话']]) {
+  app.state.sessions.set(id, newSession(id, title))
+}
+// 替身里没有"页面刷新"这回事：上一个测试段挂到 body 上的气泡要手动摘掉，
+// 气泡句柄（finishedChipNode / finishedChipTimer）也得一起清，否则新气泡会接管旧句柄、
+// 旧的不透明度动画还会漏过来（连点几轮屏幕上就会积一摞）。
+for (const stale of chipNodes()) stale.remove()
+app.dismissFinishedChip()
+enterListPage()
+
+// T50 列表页：别的会话跑完 → 该行点蓝点，且蓝点占的是「运行中」那个位置。
+app.handleFrame('event', { ...userEv(10, '跑起来'), sessionId: 'sess-B' })
+app.handleFrame('event', { ...asstEv(11, '跑完了'), sessionId: 'sess-B' })
+app.handleFrame('event', { ...{ type: 'turn/end', seq: 12, time: 12 }, sessionId: 'sess-B' })
+const rowB = readListRow('sess-B')
+check('T50 别的会话跑完，列表点蓝点', rowB && rowB.hasUnread === true && rowB.hasDot === true, JSON.stringify(rowB))
+check('T50 跑完就不再显示「运行中」', rowB && rowB.hasRunTag === false, JSON.stringify(rowB))
+  console.log('CHIPDUMP', JSON.stringify(chipNodes().map((n) => [n.textContent, n.className, n.dataset && n.dataset.sessionId])))
+check('T50 在列表页时不弹气泡（标题栏已经能看见）', chipNodes().length === 0, `${chipNodes().length} chips`)
+
+// T51 点进那个会话＝看过：蓝点消失。
+app.markSeen('sess-B')
+check('T51 点开会话后蓝点消失', readListRow('sess-B').hasUnread === false, JSON.stringify(readListRow('sess-B')))
+
+// T52 正在看 A，B 又跑完一轮 → 弹气泡，气泡上是会话名，点它跳过去。
+app.state.current = 'sess-A'
+app.state.transport = 'on'
+app.state.pinBottom = true
+app.handleFrame('event', { ...{ type: 'turn/start', seq: 20, time: 20 }, sessionId: 'sess-B' })
+app.handleFrame('event', { ...asstEv(21, '第二轮的答复'), sessionId: 'sess-B' })
+app.handleFrame('event', { ...{ type: 'turn/end', seq: 22, time: 22 }, sessionId: 'sess-B' })
+const chips52 = chipNodes()
+check('T52 看 A 时 B 跑完要弹气泡', chips52.length === 1, `${chips52.length} chips`)
+check('T52 气泡上写着是哪个会话跑完了', chips52[0] && chips52[0].textContent.includes('另一个会话'), chips52[0] ? chips52[0].textContent : 'none')
+check('T52 同时对 B 点上了蓝点', readListRow('sess-B').hasUnread === true, JSON.stringify(readListRow('sess-B')))
+
+// T53 点气泡 = 跳过去。这里不测 openChat 的完整加载（它有 await 网络），
+//     只测"点了之后气泡被撤掉、蓝点被清掉"，跳转本身由 onclick 调 openChat 保证。
+if (chips52[0]) {
+  chips52[0].onclick()
+  app.markSeen('sess-B')
+}
+check('T53 点气泡后气泡消失', chipNodes().length === 0, `${chipNodes().length} chips`)
+check('T53 点气泡后蓝点也清掉', readListRow('sess-B').hasUnread === false, JSON.stringify(readListRow('sess-B')))
+
+// T54 看着的就是那个会话、而且贴在底部 → 不点蓝点也不弹气泡（我看得见）。
+app.state.sessions.set('sess-B', newSession('sess-B', '另一个会话'))
+app.state.current = 'sess-B'
+app.state.transport = 'on'
+app.state.pinBottom = true
+app.handleFrame('event', { ...{ type: 'turn/start', seq: 30, time: 30 }, sessionId: 'sess-B' })
+app.handleFrame('event', { ...asstEv(31, '你正看着的回答'), sessionId: 'sess-B' })
+app.handleFrame('event', { ...{ type: 'turn/end', seq: 32, time: 32 }, sessionId: 'sess-B' })
+check('T54 正看着且贴底：不点蓝点', readListRow('sess-B').hasUnread === false, JSON.stringify(readListRow('sess-B')))
+check('T54 正看着且贴底：不弹气泡', chipNodes().length === 0, `${chipNodes().length} chips`)
+
+// T55 同一个会话，但我往上翻历史看得入神 → 算没看见，要提醒。
+app.state.sessions.set('sess-B', newSession('sess-B', '另一个会话'))
+app.state.current = 'sess-B'
+// 上一轮（seq 32）已经点过蓝点；这里要验的是"翻着历史、新的一轮跑完"要不要再点一次，
+// 所以先 markSeen 把上一轮的标记清掉，否则 hasUnread 恒为 true，断言就测不出东西。
+app.markSeen('sess-B')
+const unpin55 = holdPinned(false)
+app.handleFrame('event', { ...{ type: 'turn/start', seq: 40, time: 40 }, sessionId: 'sess-B' })
+app.handleFrame('event', { ...asstEv(41, '你没看到的回答'), sessionId: 'sess-B' })
+app.handleFrame('event', { ...{ type: 'turn/end', seq: 42, time: 42 }, sessionId: 'sess-B' })
+unpin55()
+check('T55 翻历史时跑完也要点蓝点', readListRow('sess-B').hasUnread === true, JSON.stringify(readListRow('sess-B')))
+// 同会话不弹"别的会话跑完了"气泡——那会让人以为切错了会话。
+check('T55 不给自己正在看的会话弹气泡', chipNodes().length === 0, `${chipNodes().length} chips`)
+
+// T56 假 idle：宿主重启把 running 丢了，一条新事件都没有 → 不该点蓝点。
+app.state.sessions.set('sess-B', newSession('sess-B', '另一个会话'))
+enterListPage()
+app.markSeen('sess-B')
+const cursorBefore = app.state.cursors['sess-B'] || 0
+app.handleFrame('status', { sessionId: 'sess-B', status: 'idle' })
+check('T56 没有新内容的 idle 不点蓝点', readListRow('sess-B').hasUnread === false, `cursor=${cursorBefore} unread=${readListRow('sess-B').hasUnread}`)
+
+// T57 真跑完但走的是 status 帧（turn/end 漏收）→ 有未读内容撑着，仍然要点。
+// latestSeq 要同时改成 45（游标 0 + 5）；T55 留下的 42 会让它判成"没有新内容"。
+app.state.latestSeq.set('sess-B', (app.state.cursors['sess-B'] || 0) + 5)
+app.handleFrame('status', { sessionId: 'sess-B', status: 'idle' })
+check('T57 有未读内容时 idle 帧也能点蓝点', readListRow('sess-B').hasUnread === true, JSON.stringify(readListRow('sess-B')))
+
+// T58 重连快照补点：断线期间跑完的会话，回来要有标记。
+app.state.unread = new Map()
+enterListPage()
+// 快照里的 lastSeq 是服务端游标，和本地游标比才知道"断线期间它跑过没有"。
+// 比较基线 state.lastSeq 必须清空：T55 留下的 42 会让 hello 的 noteLastSeq 先把它抬到 140，
+// 后面 seedUnreadFromSnapshot 再拿同一个 140 去比，就变成"没新东西"了（这是顺序问题，不是逻辑问题）。
+app.state.lastSeq = new Map()
+app.state.latestSeq = new Map([['sess-A', 100]])
+// hello 里服务端自己也会报 lastSeq（这次连上时它心里的游标）。这里刻意不给它 B：
+// 那样客户端先记基线再补点，B 永远补不上——真实场景里"断线期间跑过的会话"，
+// 服务端报的正是它比本地游标新，所以两个字段要分开喂，才能真的测到补点这条路径。
+app.state.cursors = { 'sess-A': 100 }
+app.handleFrame('hello', {
+  serverTime: 1,
+  status: { 'sess-A': 'idle', 'sess-B': 'idle' },
+  lastSeq: { 'sess-A': 100 },
+  latest: { 'sess-A': 100, 'sess-B': 140 },
+  sessionsRev: 0,
+})
+  app.seedUnreadFromSnapshot({ 'sess-B': 140, 'sess-A': 100 })
+check('T58 断线期间跑完的会话回来补点', readListRow('sess-B').hasUnread === true, JSON.stringify(readListRow('sess-B')))
+check('T58 游标已经追上的会话不点', readListRow('sess-A').hasUnread === false, JSON.stringify(readListRow('sess-A')))
+
+// T59 蓝点要能扛住整页刷新：状态是写 localStorage 的，不是只存在内存里。
+const savedRaw = localStorage.getItem('mr.unread')
+check('T59 未读状态落到 localStorage', typeof savedRaw === 'string' && savedRaw.includes('sess-B'), String(savedRaw))
+app.state.unread = new Map()
+app.loadUnread()
+check('T59 重新加载后未读还在', readListRow('sess-B').hasUnread === true, JSON.stringify(readListRow('sess-B')))
+
+// T60 会话被归档/删掉之后，蓝点不能变成孤儿（永远点不掉）。
+app.state.sessions.delete('sess-B')
+app.refreshState.call(null).catch(() => {})
+app.state.sessions.delete('sess-B')
+app.markSeen('sess-B')
+check('T60 标记已读后不会留下孤儿记录', !app.state.unread.has('sess-B'), JSON.stringify(Array.from(app.state.unread.keys())))
+
+// T61 提醒气泡必须会自己走：不点也不滑，6 秒后也要消失（悬空 DOM 越攒越多会挡屏幕）。
+const chip = (() => {
+  app.state.sessions.set('sess-X', newSession('sess-X', '第三个会话'))
+  app.state.current = 'sess-A'
+  app.showFinishedChip('sess-X')
+  return chipNodes()[0]
+})()
+check('T61 气泡先挂上', Boolean(chip), `${chipNodes().length} chips`)
+// 多等一点：淡出动画 400ms 之后才真正从 DOM 上摘掉。
+await new Promise((resolve) => setTimeout(resolve, 6900))
+check('T61 没人管的气泡自己消失', chipNodes().length === 0, `${chipNodes().length} chips`)
+
+// T62 气泡是浮层，不能挤动时间线：它必须挂在 body 上，不能插进 #transcript。
+// （T61 已经把那个气泡淡出摘掉了，这里现挂一个新的来验挂载位置。）
+const chip2 = (() => {
+  app.showFinishedChip('sess-X')
+  return chipNodes()[0]
+})()
+check('T62 气泡挂在 body 上而不是时间线里', Boolean(chip2) && chip2.parent === document.body, chip2 ? String(chip2.parent && chip2.parent.tagName) : 'no chip')
+check('T62 时间线里没有气泡节点', document.getElementById('transcript').querySelectorAll('.notice-chip').length === 0)
+app.dismissFinishedChip()
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed')
 if (expectBug) {

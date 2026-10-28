@@ -5,6 +5,36 @@
 const $ = (id) => document.getElementById(id)
 const KEY_TOKEN = 'mr.token'
 const KEY_NAME = 'mr.device'
+const KEY_UNREAD = 'mr.unread'
+// 提醒气泡挂多久自己消失。太短会"还没看清就没了"，太长又会一直挡着时间线。
+const NOTICE_CHIP_MS = 6000
+
+/* 现场留痕：手机上出问题的时候没有控制台可看，只能事后读。
+ * 环形保留最近 60 条，存 sessionStorage（不占 localStorage 配额、关页面即清）。
+ * 读法：地址栏执行 __mrTrace() 或看 setConn 的调试面板。
+ * 只在真的需要排查的地方打点，不要当成通用日志用（每条都要 JSON.stringify）。 */
+const trace = (() => {
+  const KEY = 'mr.trace'
+  const MAX = 60
+  const read = () => {
+    try {
+      const raw = JSON.parse(sessionStorage.getItem(KEY) || '[]')
+      return Array.isArray(raw) ? raw : []
+    } catch {
+      return []
+    }
+  }
+  const log = (kind, detail, action) => {
+    try {
+      const rows = read()
+      rows.push({ t: Date.now(), kind, detail: String(detail ?? ''), action: String(action ?? '') })
+      while (rows.length > MAX) rows.shift()
+      sessionStorage.setItem(KEY, JSON.stringify(rows))
+    } catch {}
+  }
+  return { log, read }
+})()
+window.__mrTrace = () => trace.read()
 
 const state = {
   token: '',
@@ -19,6 +49,13 @@ const state = {
   // 发送成功后清空；失败保留以便重试。
   attachments: [],
   running: new Map(),
+  // 会话列表里的"未读蓝点"：会话 id -> { seq, prev, at }。
+  // 出现条件只有两个：这一轮开始时手机没在看它，且这一轮确实跑完了。
+  // 存在 localStorage 里，否则离开页面再回来（手机上太常见）就全丢了。
+  unread: new Map(),
+  // 服务端 hello 帧里带的"各会话最大 seq"。用来区分"新推来的"和"本地游标本来就跟它一致"：
+  // 前者是真变化（哪怕只是归档、标已读之类不产生新帧的变化），后者不该点蓝点。
+  lastSeq: new Map(),
   turnOpen: new Map(),
   // 每轮开始的时刻，用来算"已完成，用时 x"。
   turnStartedAt: new Map(),
@@ -983,11 +1020,12 @@ function groupSessions(items) {
 function sessionRow(session) {
   const running = state.running.get(session.id) ?? session.running
   const row = document.createElement('div')
-  row.className = 'session-item'
+  row.className = 'session-item has-unread'
   const title = session.title || '未命名会话'
   const model = session.model ? `${session.model.model}${session.model.reasoningEffort ? ' · ' + session.model.reasoningEffort : ''}` : ''
   row.innerHTML = `
       <div class="session-head">
+        <span class="unread-dot" aria-label="有新内容"></span>
         <div class="session-title">${escapeHtml(title)}</div>
         ${running ? '<span class="tag run">运行中</span>' : ''}
       </div>
@@ -995,6 +1033,9 @@ function sessionRow(session) {
         <span>${ago(session.updatedAt)}</span>
         ${model ? `<span class="tag">${escapeHtml(model)}</span>` : ''}
       </div>`
+  // 蓝点是"这一行右边有没有未读"，纯样式问题，直接挂在行上。
+  // 不用 innerHTML 拼条件：那条三元写错一次就会两个标记同时出现。
+  if (!state.unread.has(session.id)) row.classList.remove('has-unread')
   row.onclick = () => openChat(session.id)
   return row
 }
@@ -1058,6 +1099,7 @@ async function refreshState() {
   if (typeof data.sessionsRev === 'number') state.sessionsRev = Math.max(state.sessionsRev || 0, data.sessionsRev)
   state.sessionsStale = false
   saveSessions()
+  pruneUnread()
   renderSessions()
   if (state.current) renderChatHeader()
 }
@@ -1068,6 +1110,17 @@ async function loadLocalSessions() {
     for (const row of rows) if (row && row.id) state.sessions.set(row.id, row)
     renderSessions()
   } catch {}
+}
+
+// 拉一次会话集合后（连线成功的第一刻）再决定蓝点去留：删掉/归档掉的会话不该留标记。
+function pruneUnread() {
+  let dirty = false
+  for (const sessionId of Array.from(state.unread.keys())) {
+    if (state.sessions.has(sessionId)) continue
+    state.unread.delete(sessionId)
+    dirty = true
+  }
+  if (dirty) saveUnread()
 }
 
 /* ------------------------------------------------------------------ chat */
@@ -1864,6 +1917,18 @@ async function openChat(sessionId) {
   state.current = sessionId
   state.seen = new Set()
   state.events = new Map()
+  // 点进来了就算看过：对当时已经标记过的会话收掉蓝点和提醒气泡。放在最前面，
+  // 后面任何 await 失败都不会留下一个"点开了还挂着未读"的状态。
+  //
+  // 但**不能**顺手把刚补上的那句"看完再说"作废：断线重连时 handleFrame('hello')
+  // 会先补蓝点、再 loadLatest(当前会话)，这条路也会走到这里，那一下把蓝点抹掉，
+  // 断线期间跑完的标记就再也看不到了。所以：会话真没变化（游标已经追平）才当场收掉，
+  // 有没读到的内容就留着，等用户真正滑到底（onTranscriptScroll）再收。
+  const pendingSeq = state.unread.has(sessionId) ? state.unread.get(sessionId).seq : 0
+  if (!pendingSeq || pendingSeq <= (state.cursors[sessionId] || 0)) {
+    markSeen(sessionId)
+    dismissFinishedChip(sessionId)
+  }
   // 换会话时清掉上一轮的开始时刻，否则「已完成，用时」会算出跨会话的荒唐值。
   state.turnStartedAt.delete(sessionId)
   // 翻页状态也按会话重置，否则第二次进同一个会话会被上一轮的"已到底"判死。
@@ -2343,6 +2408,8 @@ function normText(value) {
 function leaveChat() {
   const sessionId = state.current
   if (sessionId) api('/api/focus', { method: 'POST', body: JSON.stringify({ sessionId, focus: false }) }).catch(() => {})
+  // 刚关掉的会话可能刚点过蓝点：回到列表时它不该再挂着未读。
+  if (sessionId) markSeen(sessionId)
   state.current = ''
   showView('list')
   renderSessions()
@@ -2470,6 +2537,10 @@ async function pollOnce() {
     // 会话集合版本号：长轮询被别的事件抢先唤醒时不会带 sessions 帧，
     // 但版本号每次响应都带，所以这里补一次比对就不会漏掉归档变化。
     applySessionsRev(data.sessionsRev)
+    // 长轮询没有 hello 帧，基线只能在这里更新（顺序必须在 seed 之前）。
+    // 事件帧里已经就地调过 noticeTurnFinished 的会话，游标已经追上，seed 不会重复点。
+    seedUnreadFromSnapshot(data.lastSeq)
+    noteLastSeq(data.lastSeq)
     state.retry = 0
     setConn('on', '省流模式')
     ok = true
@@ -2516,6 +2587,171 @@ function applyModelSelection(sessionId, data) {
   if (sessionId === state.current) renderChatHeader()
 }
 
+/* ------------------------------------------------------- 未读标记 / 提醒气泡
+ *
+ * 两个诉求，共用一套"这轮到底算不算没看见"的判断：
+ *   1) 正在看 A，B 跑完了 → 在会话里弹一个气泡，点它跳过去，几秒不管自己淡出。
+ *   2) 会话列表里，跑完的那个会话在「运行中」原来的位置显示一个蓝点。
+ *
+ * 判断规矩（三条，都是真机上会踩的）：
+ *   - 必须"这一轮开始时手机不在看它"。正在看的会话轮次结束不该标未读，
+ *     真正的"看完了"由到底部时的 markSeen 负责。
+ *   - 必须"这一轮真的跑完了"（收到 turn/end）。只更新了标题、被归档，都不算。
+ *   - 蓝点要能扛住一次整页刷新：所以状态写 localStorage，不写 IndexedDB——
+ *     这是几字节的 UI 状态，不值得为一个它加一次异步事务。
+ */
+
+function loadUnread() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY_UNREAD) || '{}')
+    for (const [sessionId, value] of Object.entries(raw)) {
+      if (!sessionId || !value || typeof value !== 'object') continue
+      state.unread.set(sessionId, {
+        seq: Number(value.seq) || 0,
+        prev: Number(value.prev) || 0,
+        at: Number(value.at) || 0,
+      })
+    }
+  } catch {}
+}
+
+function saveUnread() {
+  try {
+    localStorage.setItem(KEY_UNREAD, JSON.stringify(Object.fromEntries(state.unread)))
+  } catch {}
+}
+
+function markUnread(sessionId, seq) {
+  if (!sessionId) return
+  const prev = state.unread.get(sessionId)
+  state.unread.set(sessionId, {
+    // 不会因为后面又来一条（同一次跑完的收尾事件）把 at 刷新成"刚刚"，导致气泡一直不消失。
+    seq: Number(seq) || 0,
+    prev: prev ? prev.prev : 0,
+    at: prev ? prev.at : Date.now(),
+  })
+  // 调试用：未读状态的每一步都留痕，手机上出现"蓝点莫名其妙消失/不出现"时能直接读出
+  // 是谁先点上的、又是谁把它收掉的。只留最近 40 条，不会吃内存。
+  trace.log('unread', `${sessionId}@${Number(seq) || 0}`, 'markUnread')
+  saveUnread()
+  if (!$('view-list').classList.contains('hidden')) renderSessions()
+}
+
+function markSeen(sessionId) {
+  if (!sessionId || !state.unread.has(sessionId)) return
+  state.unread.delete(sessionId)
+  trace.log('unread', sessionId, 'markSeen')
+  saveUnread()
+  // 用户正看着这个会话，说明气泡也没必要再挂着。
+  dismissFinishedChip(sessionId)
+  if (!$('view-list').classList.contains('hidden')) renderSessions()
+}
+
+/** 服务端说某会话最大 seq 是 last：本地游标追不上它，且比上次见到的大，才是"有新东西"。 */
+function sessionHasNews(sessionId, last) {
+  if (typeof last !== 'number' || last <= 0) return false
+  const cursor = state.cursors[sessionId] || 0
+  if (last <= cursor) return false
+  const before = state.lastSeq.get(sessionId)
+  return typeof before !== 'number' || last > before
+}
+
+/** 记下服务端报的各会话最大 seq，作为"下一次有没有新东西"的比较基线。 */
+function noteLastSeq(lastSeq) {
+  if (!lastSeq || typeof lastSeq !== 'object') return
+  for (const [sessionId, seq] of Object.entries(lastSeq)) {
+    if (typeof seq === 'number' && sessionId) state.lastSeq.set(sessionId, seq)
+  }
+}
+
+/** 连上（或轮询回包）时补蓝点：断线/切后台这段时间里跑过的会话，回来要能看到标记。 */
+function seedUnreadFromSnapshot(lastSeq) {
+  if (!lastSeq || typeof lastSeq !== 'object') return
+  for (const [sessionId, seq] of Object.entries(lastSeq)) {
+    if (typeof seq !== 'number') continue
+    if (!sessionHasNews(sessionId, seq)) continue
+    // 这里的所有会话都要点蓝点，包括当前正看着的那个：
+    // 断线期间它是"在后台跑完的"，用户没看到（能看到就不会重连了）。
+    // 真看完了他往下滑一下 onTranscriptScroll 就会把蓝点收掉。
+    trace.log('unread', `${sessionId}@${seq}`, 'seed')
+    markUnread(sessionId, seq)
+  }
+}
+
+/** 正在看的会话：这一轮跑完了，而且用户就在这一页 → 算看过了，不点蓝点。 */
+function shouldMarkUnread(sessionId) {
+  if (!sessionId) return false
+  if (sessionId !== state.current || state.transport !== 'on') return true
+  if (document.hidden) return true
+  return !nearBottom()
+}
+
+let finishedChipTimer = 0
+let finishedChipNode = null
+
+/**
+ * 一轮结束时调一次：该点蓝点就点，该弹气泡就弹。
+ * 气泡只在"正在看别的会话"时弹；在列表页时标题栏就是天然的提醒，不额外弹气泡。
+ */
+function noticeTurnFinished(sessionId) {
+  if (!shouldMarkUnread(sessionId)) return
+  markUnread(sessionId, state.latestSeq.get(sessionId) || 0)
+  // 两种不弹气泡的情况：
+  //   1. 列表页/配对页：那一排就是提醒本身，再浮一个气泡纯属挡路；
+  //   2. 用户正看着这个会话（只是在往上翻历史）：气泡写着"跑完了·点开看"，
+  //      可他已经在这一页了，弹出来只会让人以为切错了会话。蓝点点上就够了。
+  if (!state.current || state.current === sessionId) return
+  showFinishedChip(sessionId)
+}
+
+// 屏幕是横的一行，同一时刻只留一个气泡。新来的直接接管，
+// 否则连着两个会话跑完会叠成一摞、一起淡出、再一起被点走。
+function dismissFinishedChip(sessionId) {
+  const node = finishedChipNode
+  if (!node) return
+  if (sessionId && node.dataset.sessionId !== sessionId) return
+  // 先加类播淡出，动画结束再移除；不给 animationend 兜底的话，
+  // 用户在系统里开了"减弱动态效果"时它可能永远留一条影子。
+  node.classList.add('gone')
+  finishedChipNode = null
+  clearTimeout(finishedChipTimer)
+  const drop = () => node.remove()
+  // 动画播完自己会摘掉；再留一个定时器兜底（减弱动态效果时没有动画事件）。
+  node.addEventListener('animationend', drop, { once: true })
+  setTimeout(drop, 400)
+}
+
+function showFinishedChip(sessionId) {
+  // 先清旧的：淡出中的旧气泡不算"当前气泡"了，但它仍挂在 body 上，
+  // 不在这里挡住的话，连点两轮就会在屏幕上留下两条尾巴。
+  dismissFinishedChip()
+  const session = state.sessions.get(sessionId)
+  const title = (session && session.title) || '另一个会话'
+  const node = document.createElement('div')
+  node.className = 'notice-chip'
+  node.dataset.sessionId = sessionId
+  const dot = document.createElement('span')
+  dot.className = 'notice-dot'
+  const text = document.createElement('span')
+  text.className = 'notice-title'
+  text.textContent = title
+  const hint = document.createElement('span')
+  hint.className = 'notice-hint'
+  hint.textContent = '跑完了 · 点开看'
+  node.append(dot, text, hint)
+  // 点了才跳；滑一下只让气泡消失，不打断用户正在看的东西。
+  node.onclick = () => {
+    clearTimeout(finishedChipTimer)
+    node.remove()
+    if (finishedChipNode === node) finishedChipNode = null
+    openChat(sessionId)
+  }
+  document.body.appendChild(node)
+  finishedChipNode = node
+  clearTimeout(finishedChipTimer)
+  finishedChipTimer = setTimeout(() => dismissFinishedChip(sessionId), NOTICE_CHIP_MS)
+}
+
 function handleFrame(type, payload) {
   state.lastFrameAt = Date.now()
   // 被换绑：服务端换了新设备绑定时会立刻推这一帧，然后把连接关掉。
@@ -2530,8 +2766,15 @@ function handleFrame(type, payload) {
     // 各会话运行状态：一连上就按服务端给的值刷新列表，不用等下一次 turn/start。
     // 还顺手补发了其它设备的"运行中"，避免会话列表显示成静止。
     applyStatuses(payload && payload.status)
+    // 各会话最大 seq：记住"这次连上之前是什么样"，后面才能区分真·新内容和假变化。
+    // 必须在这里记，不能等收到事件再记——那样先到的事件会把基线抬走。
+    noteLastSeq(payload && payload.lastSeq)
     // 会话集合版本号（归档/新建/删除）：连上就对齐，别等下一次推送。
     applySessionsRev(payload && payload.sessionsRev)
+    // 断线期间漏帧：服务端说某会话比本地游标新，说明那段时间里它跑过东西，补个蓝点。
+    // 注意这一步在 noteLastSeq 之后、loadLatest 之前：前者刚把基线抬到服务端值，
+    // 后者会把当前会话的游标追平并顺手 markSeen，两边都会把标记抹掉。
+    seedUnreadFromSnapshot(payload && payload.lastSeq)
     // 断线期间漏帧自愈：服务端告诉我们各会话的最大 seq，比本地游标新就补一次。
     const latest = payload && payload.latest
     if (latest && typeof latest === 'object') {
@@ -2586,6 +2829,9 @@ function handleFrame(type, payload) {
         const session = state.sessions.get(sessionId)
         if (session) state.sessions.set(sessionId, { ...session, updatedAt: Date.now() })
       }
+      // 别的会话跑完了：跟当前会话是否还有内容无关，这里必须独立判断。
+      // 早先这段写在下面"当前会话才处理 turn/end"的分支里，切走的会话永远是灰的。
+      if (event.type === 'turn/end') noticeTurnFinished(sessionId)
       return
     }
     if (event.type === 'assistant/message') closeDeltaWith(event)
@@ -2602,6 +2848,8 @@ function handleFrame(type, payload) {
     }
     if (event.type === 'turn/end') {
       state.turnOpen.set(sessionId, false)
+      // 当前会话跑完了：用户此刻若不在这一页/不在底部，同样算没看见。
+      noticeTurnFinished(sessionId)
       // 一轮结束时，服务端队列里还没被认下的"发送中…"占位不可能再变成排队消息了：
       // 要么已经被取走（会有 user/message 事件），要么发送失败。全部丢掉，避免常驻。
       const rows = state.queues.get(sessionId) || []
@@ -2626,7 +2874,12 @@ function handleFrame(type, payload) {
     return
   }
   if (type === 'status') {
+    const sessionId = payload && payload.sessionId
+    const last = state.latestSeq.get(sessionId) || 0
+    const cursor = state.cursors[sessionId] || 0
     applyStatuses({ [payload.sessionId]: payload.status })
+    // 只有"真跑完了"才算：idle 也可能是宿主重启把状态丢了，那种情况没有新事件。
+    if (sessionId && payload.status === 'idle' && last > cursor) noticeTurnFinished(sessionId)
     return
   }
   if (type === 'steer') {
@@ -3480,6 +3733,8 @@ $('btn-send').onclick = () => send('auto') // 先绑一次，bindSendButton 会�
 bindSendButton()
 bindAttach()
 bindKeyboardRepin()
+// 上次没看完的会话，这次一进来就该带着蓝点。
+loadUnread()
 $('q-submit').onclick = submitQuestion
 $('q-dismiss').onclick = closeQuestion
 
@@ -3516,6 +3771,9 @@ function onTranscriptScroll() {
   const top = scrollTopOf(box)
   // 贴底状态跟着用户的手指走：离开底部就解除，回到底部就恢复。
   state.pinBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120
+  // 滑到底 = 看完了：这时才把未读收掉。不能一进会话就收，
+  // 否则"打开会话但没往下滑，最新回答在屏幕外"也会被当成看过。
+  if (state.pinBottom) markSeen(state.current)
   $('btn-bottom').classList.toggle('hidden', box.scrollHeight - box.scrollTop - box.clientHeight < 240)
   // 滚离顶部就重新允许翻页（用户往下看过了，再滑回顶部应该再给一页）。
   if (top > 240 && state.olderArmed.get(state.current) === false) {

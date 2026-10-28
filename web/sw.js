@@ -15,8 +15,9 @@
  * v26：长按发送键触发插话时短震一下。
  * v27：图片点开改为页内全屏看图（可缩放/拖动/下滑关闭），不再 window.open(blob:)。
  * v31：切后台再回前台不再卡死——服务端积压超过阈值改发 resync 而不是逐帧回放，
- *      客户端乱序归位合并成一次重建（scheduleReflow），不再每帧整表重建。 */
-const SHELL = 'dsh-mobile-shell-v31'
+ *      客户端乱序归位合并成一次重建（scheduleReflow），不再每帧整表重建。
+ * v32：别处会话跑完时弹提醒气泡（点开跳过去、几秒自退），会话列表用蓝点标未读。 */
+const SHELL = 'dsh-mobile-shell-v32'
 const FILES = ['/', '/index.html', '/app.js', '/style.css', '/icon.svg', '/manifest.webmanifest']
 // 入口资源必须"先要网络"：装成 PWA 后只靠缓存回退，永远看不到修复后的代码。
 const NETWORK_FIRST = new Set(['/', '/index.html', '/app.js', '/style.css'])

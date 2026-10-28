@@ -188,6 +188,21 @@ body { padding: 0; }
   font-size: 11px;
 }
 .tag.run { background: rgba(61, 220, 151, 0.14); color: var(--ok); }
+
+/* 未读蓝点：占的正是「运行中」那个位置——跑起来时显示「运行中」，跑完了换成它。
+   两件事不会同时成立，所以不用并排，也不会把标题挤窄。 */
+.unread-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.16);
+  display: none;
+}
+.session-item.has-unread .unread-dot { display: block; }
+/* 正在跑就不点蓝点：还没跑完，谈不上"有新内容"。 */
+.session-item.has-unread:has(.tag.run) .unread-dot { display: none; }
 .empty { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 14px; }
 
 /* ------------------------------------------------------------ transcript */
@@ -438,6 +453,60 @@ body { padding: 0; }
   font-size: 13px;
   z-index: 30;
   max-width: 82vw;
+}
+
+/* ---- 「另一个会话跑完了」提醒气泡 ----
+   浮在时间线顶部、不占布局：用户正在看的那一屏一个字都不能挪。
+   点它跳过去，滑一下只让它消失。 */
+.notice-chip {
+  position: fixed;
+  /* 让过顶栏（顶栏高度 + 安全区），否则会盖住返回键和会话标题 */
+  top: calc(56px + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(86vw, 420px);
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: rgba(24, 28, 38, 0.97);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+  z-index: 40;
+  cursor: pointer;
+  animation: notice-in 0.18s ease-out;
+}
+.notice-chip:active { background: rgba(32, 38, 51, 0.98); }
+.notice-chip.gone { animation: notice-out 0.24s ease-in forwards; }
+.notice-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.notice-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.notice-hint { flex: none; color: var(--muted); font-size: 12px; }
+@keyframes notice-in {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes notice-out {
+  from { opacity: 1; transform: translate(-50%, 0); }
+  to { opacity: 0; transform: translate(-50%, -8px); }
+}
+/* 系统里开了"减弱动态效果"就只做淡入淡出，别做位移。 */
+@media (prefers-reduced-motion: reduce) {
+  .notice-chip, .notice-chip.gone { animation-duration: 0.01ms; }
 }
 
 /* ---- 排队消息条（发送时本轮还在跑）---- */
