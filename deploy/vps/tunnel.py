@@ -154,15 +154,16 @@ class Slot:
         threading.Thread(target=self._accept_loop, daemon=True).start()
 
     def _accept_loop(self):
+        listener = self.listener
         while True:
             try:
-                client, peer = self.listener.accept()
-            except OSError:
+                client, peer = listener.accept()
+            except (OSError, AttributeError):
                 return
             conn_id = self._next_id()
             self.log(f"[{self.port}] 接入 {peer[0]}:{peer[1]} → conn#{conn_id}")
             with self._lock:
-                entry = {"conn": None, "client": client, "pending": []}
+                entry = {"conn": None, "client": client, "pending": [], "eof": False}
                 self.data[conn_id] = entry
             self.control.send_json({"t": "open", "id": conn_id})
             threading.Thread(
@@ -182,11 +183,19 @@ class Slot:
         如果我们等数据通道建好才 recv，浏览器的首包会卡在内核缓冲区里；
         更糟的是「数据通道建好 → 才启动本线程」就会漏掉首包，手机侧表现为
         连接直接被重置。
+
+        另一个关键：recv 返回空只代表手机把「发」的方向关了（HTTP 客户端
+        常常请求一发完就 half-close），**不代表这条连接结束了**。这时候必须
+        把 EOF 传给电脑（让本机服务知道请求体结束了、可以回响应），然后继续
+        等电脑回完数据。以前在这里直接 close 手机 socket，手机收到的是
+        半个响应或者干脆是 400/ECONNRESET。
         """
+        peer_closed = False
         try:
             while True:
                 data = client.recv(65536)
                 if not data:
+                    peer_closed = True
                     break
                 with self._lock:
                     conn = entry["conn"]
@@ -195,31 +204,53 @@ class Slot:
                         # 免得一个没人要的连接把内存吃干净。
                         if len(entry["pending"]) >= 512:
                             self.log(f"[{self.port}] conn#{conn_id} 数据通道迟迟不来，丢弃")
-                            break
+                            return
                         entry["pending"].append(data)
                         continue
-                conn.send(data, 0x2)
+                    # 在锁里写：attach_data 也在同一把锁里回填 backlog，
+                    # 两个线程往同一条 WebSocket 写帧必须串行，否则帧会交错，
+                    # 电脑侧收到的是「前半截是别人的帧尾巴、后半截才是 HTTP」。
+                    conn.send(data, 0x2)
+        except OSError:
+            peer_closed = True
+
+        # 手机不再发东西了：通知电脑「upstream 结束」，但连接留着等回程。
+        # 只有手机是异常断开（不是正常 half-close）时才整条拆掉。
+        with self._lock:
+            conn = entry.get("conn")
+            if conn is None:
+                entry["eof"] = True
+        if conn is not None and not conn.closed:
+            try:
+                conn.send_json({"t": "eof", "id": conn_id})
+            except OSError:
+                pass
+            return
+        # 数据通道都没建起来就断了，没什么可等的。
+        self._teardown(conn_id, client)
+
+    def _teardown(self, conn_id, client):
+        """整条连接收尾。只有 _pump_ws（电脑侧结束）或异常路径才会走到这里。"""
+        self.control.send_json({"t": "close", "id": conn_id})
+        with self._lock:
+            entry = self.data.pop(conn_id, None)
+        try:
+            client.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-        finally:
-            # 手机侧由本线程唯一负责收尾：先半关写方向，让还没发出去的回程数据
-            # 走完，再真正 close。两个线程同时 close 同一个 socket 会让内核发
-            # RST，浏览器侧就变成「ERR_CONNECTION_RESET」。
-            self.control.send_json({"t": "close", "id": conn_id})
-            with self._lock:
-                entry = self.data.pop(conn_id, None)
-            try:
-                client.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            time.sleep(0.05)
-            try:
-                client.close()
-            except OSError:
-                pass
+        time.sleep(0.05)
+        try:
+            client.close()
+        except OSError:
+            pass
 
     def attach_data(self, conn_id, ws):
-        """电脑为 conn#id 建好了数据通道：把之前攒下的字节冲过去。"""
+        """电脑为 conn#id 建好了数据通道：把之前攒下的字节冲过去。
+
+        整个回填过程必须在槽的锁里做——`_pump_client` 也在这把锁里写同一个
+        WebSocket。以前锁只圈住了「取 backlog」，回填放到锁外，于是两边的帧
+        互相穿插，电脑侧收到的请求前面会粘上 `{"t":"open"...}` 的尾巴。
+        """
         with self._lock:
             entry = self.data.get(conn_id)
             if entry is None:
@@ -227,8 +258,11 @@ class Slot:
             entry["conn"] = ws
             backlog = entry["pending"]
             entry["pending"] = []
-        for chunk in backlog:
-            ws.send(chunk, 0x2)
+            already_eof = entry.get("eof", False)
+            for chunk in backlog:
+                ws.send(chunk, 0x2)
+            if already_eof:
+                ws.send_json({"t": "eof", "id": conn_id})
         threading.Thread(target=self._pump_ws, args=(conn_id, ws), daemon=True).start()
         return True
 
@@ -252,29 +286,35 @@ class Slot:
         except (ConnectionError, OSError):
             pass
         finally:
-            # 回程结束 = 电脑那边已经没有更多字节了。这里只半关手机的写方向，
-            # 让「手机 → 电脑」方向继续由 _pump_client 收尾；socket 对象的
-            # close 统一交给 _pump_client，避免两个线程抢着关同一个 fd 触发 RST。
+            # 电脑那边把响应写完了（local 的 close）→ 整条连接真的结束了。
             with self._lock:
                 entry = self.data.get(conn_id)
             client = entry.get("client") if entry else None
             if client is not None:
-                try:
-                    client.shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
-            self.control.send_json({"t": "close", "id": conn_id})
+                self._teardown(conn_id, client)
 
     def close(self, reason=""):
         try:
             if self.listener:
+                # 先 shutdown 再 close：accept() 阻塞在 listener 上时，单纯 close
+                # 不会把那个 fd 真正还回去，端口会一直显示 LISTEN 却没人能连，
+                # 下一次隧道重连就报 Errno 98 Address already in use。
+                try:
+                    self.listener.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
                 self.listener.close()
         except OSError:
             pass
+        self.listener = None
         with self._lock:
             entries = list(self.data.values())
             self.data.clear()
         for entry in entries:
+            try:
+                entry["client"].shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 entry["client"].close()
             except OSError:
@@ -338,7 +378,7 @@ class TunnelServer:
 
     def _serve(self, sock, addr):
         try:
-            head, _rest = self._read_head(sock)
+            head, rest = self._read_head(sock)
             parts = head.split("\r\n")[0].split(" ")
             path = urlsplit(parts[1]).path if len(parts) >= 2 else ""
             if path not in (CONTROL_PATH, DATA_PATH):
@@ -346,6 +386,10 @@ class TunnelServer:
                 sock.close()
                 return
             ws, headers = WsConn.handshake(sock, head)
+            # 握手包里跟着的字节不能丢：那是客户端紧随其后发来的帧，
+            # 丢掉就等于吃掉请求头前半截，本机服务收到的是「残句」→ 400。
+            if rest:
+                ws._buf = rest
             sock.settimeout(None)
             if path == CONTROL_PATH:
                 self._serve_control(ws, headers, addr)

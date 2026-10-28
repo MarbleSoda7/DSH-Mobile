@@ -1,0 +1,25 @@
+[Unit]
+Description=DSH Mobile gateway (port allocation + builtin tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dsh-gateway
+Environment=DSH_API_HOST=127.0.0.1
+# 7789 归 Caddy（唯一公网入口）。分配接口和隧道服务都只听本机：
+#   7790 = 分配接口（/api/*），7791 = 隧道（/tunnel、/tunnel-data）
+Environment=DSH_API_PORT=7790
+Environment=DSH_API_STATE=/var/lib/dsh-gateway/api.json
+Environment=DSH_API_PORT_BASE=9000
+Environment=DSH_API_PORT_STEP=1
+Environment=DSH_API_SLOTS=20
+Environment=DSH_API_PUBLIC_HOST=8.152.5.127
+Environment=DSH_TUNNEL_PORT=7791
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/dsh-gateway/api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

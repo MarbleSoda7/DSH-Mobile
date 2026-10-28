@@ -2,9 +2,9 @@
 #
 # 服务器对公网只开一个端口：7789。所有"服务器自己干的事"都从它进来：
 #
-#   /api/*          → 分配接口（127.0.0.1:7791），电脑申请端口
-#   /tunnel         → 隧道控制通道（同上，同一进程里的 TunnelServer）
-#   /tunnel-data    → 隧道数据通道（每条手机连接一条）
+#   /api/*          → 分配接口（127.0.0.1:7790），电脑申请端口
+#   /tunnel         → 隧道控制通道（127.0.0.1:7791，同进程里的 TunnelServer）
+#   /tunnel-data    → 隧道数据通道（同上，每条手机连接一条）
 #
 # 两条隧道连接都是 WebSocket Upgrade，是长连接，必须关掉缓冲和超时，
 # 否则 Caddy 会在空闲一会儿之后把连接掐掉，表现就是手机上「已断开」。
@@ -35,7 +35,7 @@
 
 	# 分配接口
 	handle /api/* {
-		reverse_proxy 127.0.0.1:7791 {
+		reverse_proxy 127.0.0.1:7790 {
 			header_up X-Forwarded-Proto {scheme}
 		}
 	}
